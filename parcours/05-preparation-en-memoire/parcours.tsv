@@ -1,0 +1,7 @@
+5. Formes préparées en mémoire
+01-pixels-remplaces.c	Les pixels remplacés	sortie
+02-carte-du-sprite.c	Le sprite sur la carte	sortie
+03-decalage.c	Le décalage vers la droite	sortie
+04-passage-sur-un-pont.c	Le pont par-dessus le chemin	sortie
+05-rotation.c	Un quart de tour	sortie
+06-spirale-preparee.c	La spirale carrée dans le tampon	sortie

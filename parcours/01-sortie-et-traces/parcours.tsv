@@ -1,0 +1,10 @@
+1. Sortie et traces sur stdout
+01-mise-sous-tension.c	Mise sous tension	sortie
+02-passage-de-la-porte.c	Le passage de la porte	sortie
+03-feux-du-quai.c	Les feux du quai	sortie
+04-rapport-de-tours.c	Le rapport de tours	sortie
+05-relais.c	Le relais à bascule	sortie	05-relais.txt
+06-file-de-colis.c	La file de colis	sortie
+07-rangees-et-places.c	Rangées et places	sortie
+08-marches.c	Les marches	sortie
+09-controle-des-cases.c	Le contrôle des cases	sortie

@@ -1,0 +1,7 @@
+2. Sortie et traces sur stderr
+01-lampe-test.c	La lampe de test	stderr
+02-deux-journaux.c	Les deux journaux	flux
+03-tri-de-mesures.c	Le tri des mesures	flux
+04-controle-de-vitesse.c	Le contrôle de vitesse	flux
+05-lecteur-de-balises.c	Le lecteur de balises	flux	05-lecteur-de-balises.txt
+06-bilan-de-jauge.c	Le bilan de la jauge	flux

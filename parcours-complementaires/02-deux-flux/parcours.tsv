@@ -1,0 +1,7 @@
+2. Sortie et traces sur stderr · variantes et défis
+07-sonde-muette.c	Variante · La sonde muette	stderr
+08-paquets-acceptes.c	Variante · Les paquets acceptés	flux
+09-alerte-au-seuil.c	Variante · L’alerte au seuil	flux
+10-journal-differe.c	Variante · Le journal différé	flux
+11-compte-bloque.c	Défi · Le compte bloqué	flux	11-compte-bloque.txt
+12-noeuds-de-relais.c	Défi · Les nœuds du relais	flux
