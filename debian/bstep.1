@@ -1,0 +1,54 @@
+.TH BSTEP 1 "novembre 2026" "bstep" "Commandes utilisateur"
+.SH NOM
+bstep \- interpréteur visuel et parcours d'exercices en C
+.SH SYNOPSIS
+.B bstep
+.RB [ \-\-tui ]
+.RB [ \-\-fenetre ]
+.RB [ \-\-parcours
+.IR chemin ]
+.RI [ dossier-source | fichier.c ]
+.SH DESCRIPTION
+.B bstep
+exécute un sous-ensemble du C pas à pas. Il permet d'inspecter la mémoire
+et de vérifier des prédictions sur la sortie d'un programme.
+Si le lancement graphique échoue, il utilise le mode TUI lorsqu'un
+terminal interactif est disponible.
+.SH OPTIONS
+.TP
+.B \-\-tui
+Lance l'interface dans le terminal.
+.TP
+.B \-\-fenetre
+Ouvre des fenêtres graphiques avec bordures.
+.TP
+.BI \-\-parcours " chemin"
+Ouvre un catalogue, un dossier d'exercice ou un manifeste
+.BR parcours.tsv .
+Le chemin peut aussi désigner un dossier de parcours fourni par
+.B bstep
+ou un parcours personnel.
+.TP
+.B \-\-help
+Affiche la syntaxe de la commande.
+.SH FICHIERS
+.TP
+.I /usr/share/bstep/
+Polices, exemples et parcours fournis par le paquet.
+.TP
+.I ~/.bstep/programmes/
+Dossier source et d'enregistrement par défaut après installation.
+Un chemin source donné en argument choisit un autre dossier.
+.TP
+.I ~/.bstep/parcours/
+Parcours personnels affichés dans le catalogue de l'application.
+Un parcours personnel peut remplacer le dossier du même nom fourni par le paquet.
+.TP
+.I ~/.bstep/assets/
+Atlas de glyphes personnels pour l'interface graphique.
+.SH RACCOURCIS
+F5 lance ou met en pause la lecture, F6 revient au début,
+F7 revient d'un pas et F8 avance d'un pas. Ctrl+Q quitte
+.BR bstep .
+Dans le TUI, F2 change de vue, F3 ouvre les parcours
+et F4 vérifie une réponse.

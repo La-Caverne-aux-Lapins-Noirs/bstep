@@ -13,6 +13,7 @@
 #endif
 #include "editor_keys.hpp"
 #include "panels.hpp"
+#include "paths.hpp"
 #include "source_directory.hpp"
 
 #include <chrono>
@@ -142,9 +143,9 @@ class App
 {
 public:
     App(UiDisplay &display, fs::path sourceRoot, const fs::path &file,
-        fs::path courseRoot, bool startCourse)
+        std::vector<fs::path> courseRoots, bool startCourse)
         : display_(display), draw_(display.painter()), source_(std::move(sourceRoot)),
-          course_(std::move(courseRoot), draw_.terminal())
+          course_(std::move(courseRoots), draw_.terminal())
     {
         docs_.emplace_back("programme.c", "");
         layout();
@@ -2362,10 +2363,10 @@ private:
 };
 
 #ifndef BSTEP_GUI
-int runTerminal(const fs::path &root, const fs::path &file, const fs::path &courseRoot, bool startCourse)
+int runTerminal(const fs::path &root, const fs::path &file, std::vector<fs::path> courseRoots, bool startCourse)
 {
     Terminal terminal;
-    App app(terminal, root, file, courseRoot, startCourse);
+    App app(terminal, root, file, std::move(courseRoots), startCourse);
     app.tick();
     while (terminal.running())
     {
@@ -2491,9 +2492,9 @@ t_bunny_response guiEvent(const t_bunny_event *event, void *data)
 }
 
 int runGui(Desktop &desktop, const fs::path &root, const fs::path &file,
-           const fs::path &courseRoot, bool startCourse, int ready)
+           std::vector<fs::path> courseRoots, bool startCourse, int ready)
 {
-    GuiSession gui{App(desktop, root, file, courseRoot, startCourse), desktop};
+    GuiSession gui{App(desktop, root, file, std::move(courseRoots), startCourse), desktop};
     bunny_set_event_response(guiEvent);
     bunny_set_click_response([](t_bunny_event_state state, t_bunny_mouse_button button, void *data)
     {
@@ -2559,7 +2560,7 @@ int main(int argc, char **argv)
         bool useTerminal = false;
 #endif
         fs::path target;
-        fs::path courseRoot;
+        std::optional<fs::path> courseArgument;
         for (int i = 1; i < argc; ++i)
         {
             const std::string_view argument(argv[i]);
@@ -2585,7 +2586,7 @@ int main(int argc, char **argv)
             {
                 if (++i == argc)
                     throw std::runtime_error("Indique un dossier de parcours ou un fichier parcours.tsv.");
-                courseRoot = fs::canonical(argv[i]);
+                courseArgument = argv[i];
             }
             else if (target.empty())
                 target = argument;
@@ -2597,11 +2598,12 @@ int main(int argc, char **argv)
         auto executable = fs::canonical("/proc/self/exe", ec);
         if (ec)
             executable = fs::absolute(argv[0]);
-        fs::path root = executable.parent_path() / "programmes";
+        const BstepPaths paths(executable);
+        fs::path root;
         fs::path file;
         if (!target.empty())
         {
-            target = fs::canonical(target);
+            target = paths.commandPath(target, "programmes");
             if (fs::is_directory(target))
                 root = target;
             else if (fs::is_regular_file(target))
@@ -2613,24 +2615,28 @@ int main(int argc, char **argv)
                 throw std::runtime_error("Un dossier source ou un fichier ordinaire est attendu.");
         }
 
-        const bool startCourse = !courseRoot.empty();
-        if (!startCourse)
-            courseRoot = executable.parent_path() / "parcours";
+        const bool startCourse = courseArgument.has_value();
+        auto courseRoots = startCourse ? std::vector{paths.commandPath(*courseArgument, "parcours")}
+                                      : paths.courseRoots();
 #ifdef BSTEP_GUI
-        Desktop desktop(windowed, executable.parent_path() / "assets");
-        return runGui(desktop, root, file, courseRoot, startCourse, ready);
+        Desktop desktop(windowed, paths);
+        if (root.empty())
+            root = paths.defaultSources();
+        return runGui(desktop, root, file, std::move(courseRoots), startCourse, ready);
 #else
 #ifndef BSTEP_TUI_ONLY
         if (!useTerminal)
         {
-            if (const auto exitCode = launchGui(executable.parent_path() / "bstep-gui", argv))
+            if (const auto exitCode = launchGui(paths.guiExecutable(), argv))
                 return *exitCode;
             if (!Terminal::available())
                 throw std::runtime_error("Affichage graphique indisponible et aucun terminal interactif.");
             std::cerr << "Affichage graphique indisponible. Ouverture du mode TUI.\n";
         }
 #endif
-        return runTerminal(root, file, courseRoot, startCourse);
+        if (root.empty() && Terminal::available())
+            root = paths.defaultSources();
+        return runTerminal(root, file, std::move(courseRoots), startCourse);
 #endif
     }
     catch (const std::exception &error)

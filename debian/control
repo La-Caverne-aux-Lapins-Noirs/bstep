@@ -1,0 +1,21 @@
+Source: bstep
+Section: devel
+Priority: optional
+Maintainer: Jason Brillante <jason.brillante@efrits.fr>
+Build-Depends:
+ debhelper-compat (= 13),
+ g++ (>= 12),
+ liblapin-dev
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+
+Package: bstep
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Recommends: x11-xserver-utils
+Description: visual interpreter and exercises for learning C
+ bstep runs a subset of C and lets learners step through instructions,
+ inspect memory and compare their predictions with the program's output.
+ .
+ It includes a graphical interface, an interactive terminal interface
+ and ready-to-use exercise courses.

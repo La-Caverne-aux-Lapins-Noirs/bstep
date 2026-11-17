@@ -12,7 +12,7 @@ class KillBuffer;
 class CourseView
 {
 public:
-    CourseView(std::filesystem::path root, bool terminal);
+    CourseView(std::vector<std::filesystem::path> roots, bool terminal);
 
     void enter(bool openSingle = false);
     void leave();
@@ -44,7 +44,7 @@ private:
         std::size_t next = 0;
     };
 
-    std::filesystem::path root_;
+    std::vector<std::filesystem::path> roots_;
     std::vector<training::CatalogEntry> catalog_;
     std::optional<training::Course> course_;
     std::size_t current_ = 0;

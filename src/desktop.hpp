@@ -15,7 +15,7 @@
 class Desktop final : public UiDisplay
 {
 public:
-    Desktop(bool windowed, const std::filesystem::path &assets)
+    Desktop(bool windowed, const BstepPaths &paths)
         : windowed_(windowed)
     {
         // Clone outputs share the same origin. Use one window for that desktop region.
@@ -59,7 +59,7 @@ public:
         reopen();
         if (!events_[0])
             throw std::runtime_error("Impossible d'ouvrir la fenêtre principale.");
-        painter_.emplace(assets);
+        painter_.emplace(paths);
     }
 
     static const char *title(std::size_t index)

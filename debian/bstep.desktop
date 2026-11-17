@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=bstep
+Comment=Step through C programs and solve exercises
+Comment[fr]=Exécuter des programmes C pas à pas et résoudre des exercices
+Exec=bstep --fenetre
+TryExec=bstep
+Icon=applications-development
+Terminal=false
+Categories=Development;IDE;

@@ -9,11 +9,34 @@ Sous Linux, utilise Make avec une installation de LibLapin où b++ est disponibl
     make
     ./bstep
 
-Le dossier source par défaut est programmes, à côté de l’exécutable. Un dossier passé en argument devient la racine de l’explorateur. Si tu passes un fichier, l’application l’ouvre et prend son dossier parent comme racine.
+Le dossier source par défaut est `~/.bstep/programmes` s'il existe. Une copie de travail utilise son dossier `programmes` adjacent. Une installation crée `~/.bstep/programmes` au premier lancement pour servir de dossier source et d'enregistrement. Un dossier passé en argument devient la racine de l’explorateur. Si tu passes un fichier, l’application l’ouvre et prend son dossier parent comme racine.
 
     ./bstep mon-dossier-c
     ./bstep mon-dossier-c/exercice.c
     ./bstep --fenetre mon-dossier-c
+
+## Paquet Debian
+
+Configure dans APT le dépôt qui fournit `liblapin-dev` avec `b++` et SFML 3 pour la distribution cible. Depuis la racine des sources, installe les dépendances et construis le paquet.
+
+```sh
+sudo apt install build-essential debhelper liblapin-dev
+dpkg-buildpackage -us -uc -b
+```
+
+Le paquet `bstep_<version>_<architecture>.deb` se trouve dans le répertoire parent, prêt à importer dans le dépôt APT. Renseigne la version et la distribution de ton dépôt dans `debian/changelog`. Une fois le paquet importé et l'index du dépôt mis à jour, `apt install bstep` installe les deux interfaces.
+
+| Emplacement | Contenu |
+| --- | --- |
+| `/usr/bin/bstep` | Commande à lancer. |
+| `/usr/lib/bstep/bstep-gui` | Exécutable graphique utilisé par bstep. |
+| `/usr/share/bstep/` | Atlas, exemples dans `programmes/`, parcours et banque complémentaire. |
+| `~/.bstep/programmes/` | Programmes personnels et sauvegardes. |
+| `~/.bstep/parcours/` | Parcours personnels ajoutés au catalogue. |
+| `~/.bstep/assets/` | Atlas personnels prioritaires sur les fichiers fournis. |
+
+Les ressources sont cherchées dans `~/.bstep`, à côté de l'exécutable, dans le dossier de données de l'installation, puis dans `/usr/share/bstep`. Pour ouvrir les exemples fournis, lance `bstep /usr/share/bstep/programmes`. Un nom relatif est d'abord résolu depuis le répertoire courant, puis dans les dossiers de ressources.
+
 
 ## Mode TUI
 
@@ -102,19 +125,19 @@ Clique sur **Parcours** pour choisir une série d’exercices. Lis le code en le
 
 **Exercices** ouvre la liste et montre les réussites. Sur deux écrans ou plus, la deuxième fenêtre accueille la réponse et le suivi. Sa fermeture ramène ces commandes dans la fenêtre principale. Le bouton **Éditeur** revient au travail en cours.
 
-Les réussites sont enregistrées par compte Linux dans `$XDG_STATE_HOME/bstep/parcours` ou `~/.local/state/bstep/parcours`. À la réouverture, le parcours reprend au premier exercice à faire. Une modification du code, de la règle ou de l’entrée fixe entraîne une nouvelle validation de l’exercice.
+Les réussites sont enregistrées par compte Linux dans `$XDG_STATE_HOME/bdebug/parcours` ou `~/.local/state/bdebug/parcours`. À la réouverture, le parcours reprend au premier exercice à faire. La progression est associée au chemin du manifeste. Une modification du code, de la règle ou de l’entrée fixe entraîne une nouvelle validation de l’exercice.
 
 ### Les exercices fournis
 
-Les six parcours principaux apparaissent dans **Parcours**, des sorties simples à la récursivité. Le premier propose neuf exercices, dont trois sur les boucles imbriquées. Les cinq autres en proposent six chacun. La banque complémentaire propose quatre variantes et deux défis pour chaque thème. Lance-la depuis la racine du projet pour choisir un exercice à retravailler.
+Les six parcours principaux apparaissent dans **Parcours**, des sorties simples à la récursivité. Le premier propose neuf exercices, dont trois sur les boucles imbriquées. Les cinq autres en proposent six chacun. La banque complémentaire propose quatre variantes et deux défis pour chaque thème. Lance-la depuis le répertoire de ton choix pour choisir un exercice à retravailler.
 
-    ./bstep --parcours parcours-complementaires
+    bstep --parcours parcours-complementaires
 
 **Mise sous tension**, **Le passage de la porte** et **Les feux du quai** forment une première séance. Elles font intervenir l’affectation, le choix d’une branche et le suivi des tours de boucle. Les deux versions de la spirale, en flux puis préparée en mémoire, permettent de retrouver une même sortie à partir de deux ordres de calcul.
 
 ### Ajouter un parcours
 
-Crée un sous-dossier dans `parcours/` à côté de l’exécutable, avec un fichier `parcours.tsv` et les sources qu’il référence. Le manifeste est en UTF-8. Sa première ligne utile donne le titre, puis chaque ligne donne un exercice dans l’ordre voulu. Les colonnes sont séparées par des tabulations. Les lignes vides et celles qui commencent par `#` sont ignorées.
+Crée un sous-dossier dans `~/.bstep/parcours/` ou dans le dossier `parcours/` d'une copie de travail, avec un fichier `parcours.tsv` et les sources qu’il référence. Un dossier personnel remplace le parcours fourni sous le même nom. Le manifeste est en UTF-8. Sa première ligne utile donne le titre, puis chaque ligne donne un exercice dans l’ordre voulu. Les colonnes sont séparées par des tabulations. Les lignes vides et celles qui commencent par `#` sont ignorées.
 
 ```text
 Lire des boucles

@@ -3,6 +3,8 @@
 #include "editor_keys.hpp"
 
 #include <algorithm>
+#include <set>
+#include <tuple>
 #include <utility>
 
 namespace
@@ -136,8 +138,8 @@ void paintText(Painter &draw, Rect area, const Editor &ed, bool focused, std::st
 
 } // namespace
 
-CourseView::CourseView(std::filesystem::path root, bool terminal)
-    : root_(std::move(root)), terminal_(terminal) {}
+CourseView::CourseView(std::vector<std::filesystem::path> roots, bool terminal)
+    : roots_(std::move(roots)), terminal_(terminal) {}
 
 void CourseView::enter(bool openSingle)
 {
@@ -232,9 +234,32 @@ bool CourseView::busy() const
 
 void CourseView::refresh()
 {
+    catalog_.clear();
     catalogNote_.clear();
-    try { catalog_ = training::discover(root_); }
-    catch (const std::exception &error) { catalogNote_ = error.what(); }
+    std::set<std::filesystem::path> selected;
+    for (const auto &root : roots_)
+    {
+        try
+        {
+            auto entries = training::discover(root);
+            if (entries.empty())
+                continue;
+            const auto base = std::filesystem::canonical(root);
+            for (auto &entry : entries)
+            {
+                const auto key = entry.manifest.lexically_relative(base);
+                if (selected.insert(key).second)
+                    catalog_.push_back(std::move(entry));
+            }
+        }
+        catch (const std::exception &error)
+        {
+            if (catalogNote_.empty())
+                catalogNote_ = error.what();
+        }
+    }
+    std::ranges::sort(catalog_, [](const auto &a, const auto &b)
+        { return std::tie(a.title, a.manifest) < std::tie(b.title, b.manifest); });
     catalogTop_ = 0;
     listSelection_ = 0;
 }
@@ -475,8 +500,9 @@ void CourseView::drawCatalog(Painter &draw, Point hover) const
         draw.text(main_.x + 12, main_.y + 56, "Aucun parcours trouvé.", color::muted, 16);
         draw.text(main_.x + 12, main_.y + 82, "Ajoute un dossier avec parcours.tsv.", color::muted,
                   14, false, false, main_.w - 24);
-        draw.text(main_.x + 12, main_.y + 109, root_.string(), color::type,
-                  12, true, false, main_.w - 24);
+        if (!roots_.empty())
+            draw.text(main_.x + 12, main_.y + 109, roots_.front().string(), color::type,
+                      12, true, false, main_.w - 24);
     }
     if (!catalogNote_.empty())
         draw.text(main_.x + 12, main_.bottom() - 28, catalogNote_, color::gold,

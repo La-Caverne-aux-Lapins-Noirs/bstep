@@ -2,6 +2,7 @@
 
 #include "draw.hpp"
 #include "font_atlas.hpp"
+#include "paths.hpp"
 #include "utf8.hpp"
 
 #include <lapin.h>
@@ -24,10 +25,10 @@ struct PictureDeleter
 class LapinPainter final : public Painter
 {
 public:
-    explicit LapinPainter(const std::filesystem::path &assets)
-        : mono_(loadAtlas(assets / "atlas-mono.png"))
-        , sans_(loadAtlas(assets / "atlas-sans.png"))
-        , bold_(loadAtlas(assets / "atlas-mono-bold.png"))
+    explicit LapinPainter(const BstepPaths &paths)
+        : mono_(loadAtlas(paths.asset("atlas-mono.png")))
+        , sans_(loadAtlas(paths.asset("atlas-sans.png")))
+        , bold_(loadAtlas(paths.asset("atlas-mono-bold.png")))
     {
     }
 

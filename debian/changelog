@@ -1,0 +1,6 @@
+bstep (0.1.0) unstable; urgency=medium
+
+  * Package the graphical and terminal interfaces, examples and exercise courses.
+  * Discover packaged resources and personal content under ~/.bstep.
+
+ -- Jason Brillante <jason.brillante@efrits.fr>  Tue, 17 Nov 2026 00:00:00 +0100
