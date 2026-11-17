@@ -6,22 +6,23 @@
 
 #include <array>
 
+class UiDisplay;
 class KillBuffer;
 
 class CourseView
 {
 public:
-    explicit CourseView(std::filesystem::path root);
+    CourseView(std::filesystem::path root, bool terminal);
 
     void enter(bool openSingle = false);
     void leave();
     void layout(Rect main, Rect tracking);
     bool tick();
-    void draw(Painter &painter, t_bunny_position hover, bool secondary) const;
-    void click(t_bunny_position point, bool secondary, bool shift);
-    void wheel(t_bunny_position point, bool secondary, int axis, int delta);
-    void key(t_bunny_keysym key, bool secondary, bool control, bool shift, KillBuffer &kills);
-    void text(char32_t character, bool secondary);
+    void draw(Painter &painter, Point hover, bool secondary) const;
+    void click(Point point, bool secondary, bool shift);
+    void wheel(Point point, bool secondary, int axis, int delta);
+    void key(Key key, bool secondary, bool control, bool shift, KillBuffer &kills, UiDisplay &display);
+    void insert(std::u32string_view text, bool secondary);
 
 private:
     struct Layout
@@ -49,10 +50,12 @@ private:
     std::size_t current_ = 0;
     int catalogTop_ = 0;
     int progressTop_ = 0;
+    int listSelection_ = 0;
     Editor code_{""};
     Editor input_{""};
     std::array<Editor, 2> answers_{Editor(""), Editor("")};
     std::optional<std::size_t> focusedAnswer_;
+    bool terminal_;
     bool showInput_ = false;
     bool showProgress_ = false;
     Rect main_{}, secondary_{};
@@ -80,8 +83,9 @@ private:
     void report(training::Verdict result, bool atQuestion);
     void followQuestion();
     void followAnswer(std::size_t index, Rect area);
-    void drawCatalog(Painter &painter, t_bunny_position hover) const;
-    void drawCode(Painter &painter, t_bunny_position hover) const;
-    void drawTracking(Painter &painter, t_bunny_position hover) const;
-    void clickTracking(t_bunny_position point, bool shift);
+    void drawCatalog(Painter &painter, Point hover) const;
+    void drawCode(Painter &painter, Point hover) const;
+    void drawTracking(Painter &painter, Point hover) const;
+    void clickTracking(Point point, bool shift);
+    bool navigateList(Key key);
 };

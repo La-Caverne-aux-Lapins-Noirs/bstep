@@ -1,10 +1,10 @@
 # bstep
 
-Un interpréteur visuel pour les exercices de C. Le triangle dans la marge indique la prochaine instruction. La mémoire montre les variables, les cases des tableaux et les cibles des pointeurs. L’éditeur et le terminal utilisent des glyphes PNG, avec couleurs ANSI et caractères gras.
+Un interpréteur visuel pour les exercices de C. Le triangle dans la marge indique la prochaine instruction. La mémoire montre les variables, les cases des tableaux et les cibles des pointeurs. L’éditeur et les flux utilisent les couleurs et le gras ANSI. L’interface LibLapin utilise des atlas de glyphes PNG.
 
 ## Compiler et ouvrir
 
-Sous Linux, utilise Make avec une installation de LibLapin où b++ est disponible dans le PATH. Garde les dossiers assets et programmes à côté de l’exécutable.
+Sous Linux, utilise Make avec une installation de LibLapin où b++ est disponible dans le PATH. Garde le fichier `bstep-gui` et les dossiers `assets` et `programmes` à côté de `bstep`.
 
     make
     ./bstep
@@ -14,6 +14,30 @@ Le dossier source par défaut est programmes, à côté de l’exécutable. Un d
     ./bstep mon-dossier-c
     ./bstep mon-dossier-c/exercice.c
     ./bstep --fenetre mon-dossier-c
+
+## Mode TUI
+
+```sh
+./bstep --tui
+./bstep --tui --parcours parcours/02-deux-flux
+make TUI_ONLY=1
+./bstep
+```
+
+`--tui` lance bstep dans le terminal courant. Le binaire graphique y bascule aussi si l’affichage X11 ou l’ouverture de la fenêtre principale échoue et qu’un terminal interactif est disponible. `make TUI_ONLY=1` construit le même exécutable en mode terminal avec un compilateur C++20, sans dépendance à LibLapin, SFML ou X11. Un `make` ordinaire rétablit le lancement graphique par défaut.
+
+Les panneaux se réorganisent au redimensionnement. Les terminaux larges affichent simultanément l’éditeur, la mémoire et les flux. Les terminaux plus étroits les présentent par onglets. Le clic active les commandes, le glisser sélectionne le code et la molette fait défiler la vue sous le pointeur. La souris fonctionne avec les émulateurs qui transmettent les événements xterm SGR, y compris à travers SSH.
+
+| Touche | Action dans le TUI |
+| --- | --- |
+| F2 | Change de vue. En parcours, ouvre ou ferme la liste des exercices. |
+| F3 | Bascule entre l’éditeur et les parcours. |
+| F4 | Vérifie la réponse d’un exercice. |
+| Maj+Tab | Passe d’un champ de réponse à l’autre. |
+| F10 | Enregistre le fichier sous un autre nom. |
+| Ctrl+Q | Quitte et rend la main au terminal. |
+
+Les raccourcis de lecture F5 à F8, de débogage F9 et d’édition Ctrl+K et Ctrl+Y restent disponibles. Ctrl+C, Ctrl+X et Ctrl+V utilisent un presse-papiers interne dans le TUI. Pour coller depuis une autre application, utilise la commande de collage de ton terminal.
 
 ## Écrans
 

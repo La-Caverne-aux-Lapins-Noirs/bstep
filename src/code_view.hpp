@@ -3,8 +3,9 @@
 #include "editor.hpp"
 #include "panels.hpp"
 
-inline constexpr int codePitch = 22;
-inline constexpr int glyphWidth = 10;
+inline constexpr int codeLinePitch(bool terminal) { return terminal ? terminalCellHeight : 22; }
+inline constexpr int codeGlyphWidth(bool terminal) { return terminal ? terminalCellWidth : 10; }
+inline constexpr int codeGutter(bool terminal) { return terminal ? 40 : 54; }
 
 struct CodeMarkers
 {
@@ -77,7 +78,9 @@ inline std::vector<vt::Style> syntax(std::u32string_view line, bool &comment)
 
 inline void paintSource(Painter &draw, const Editor &ed, Rect codeView, CodeMarkers marks = {})
 {
-    const int codeX = codeView.x + 54;
+    const int codePitch = codeLinePitch(draw.terminal());
+    const int glyphWidth = codeGlyphWidth(draw.terminal());
+    const int codeX = codeView.x + codeGutter(draw.terminal());
     const int codeRows = codeView.h / codePitch;
     const int codeColumns = std::max(0, (codeView.right() - codeX - 10) / glyphWidth);
     draw.rect(codeView, color::editor);
@@ -133,7 +136,7 @@ inline void paintSource(Painter &draw, const Editor &ed, Rect codeView, CodeMark
         }
         if (marks.caret && row == caretRow && caretCol >= ed.left
             && caretCol <= ed.left + codeColumns)
-            draw.rect({codeX + (caretCol - ed.left) * glyphWidth, y + 3, 2, 16}, color::mint);
+            draw.caret({codeX + (caretCol - ed.left) * glyphWidth, y + 3, 2, 16}, color::mint);
     }
     if (ed.lines() > codeRows && codeRows > 0)
     {

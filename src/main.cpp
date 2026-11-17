@@ -1,13 +1,23 @@
 #include "cmini.hpp"
 #include "code_view.hpp"
 #include "course_view.hpp"
+#include "display.hpp"
+#ifdef BSTEP_GUI
 #include "desktop.hpp"
-#include "draw.hpp"
+#include <fcntl.h>
+#else
+#include "terminal.hpp"
+#ifndef BSTEP_TUI_ONLY
+#include "gui_launch.hpp"
+#endif
+#endif
 #include "editor_keys.hpp"
 #include "panels.hpp"
 #include "source_directory.hpp"
 
 #include <chrono>
+#include <cstdlib>
+#include <memory>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -131,9 +141,10 @@ std::string fitMono(std::string_view text, int columns)
 class App
 {
 public:
-    App(Desktop &desktop, const fs::path &assets, fs::path sourceRoot, const fs::path &file,
+    App(UiDisplay &display, fs::path sourceRoot, const fs::path &file,
         fs::path courseRoot, bool startCourse)
-        : desktop_(desktop), draw_(assets), source_(std::move(sourceRoot)), course_(std::move(courseRoot))
+        : display_(display), draw_(display.painter()), source_(std::move(sourceRoot)),
+          course_(std::move(courseRoot), draw_.terminal())
     {
         docs_.emplace_back("programme.c", "");
         layout();
@@ -143,20 +154,22 @@ public:
             prepare();
         if (startCourse)
             setStudy(true, true);
+        else if (draw_.terminal())
+            setFocus(Focus::editor);
     }
 
-    t_bunny_response tick()
+    void tick()
     {
         if (restoreWindows_)
         {
-            desktop_.reopen();
+            display_.reopen();
             restoreWindows_ = false;
-            toolsOverlay_ = toolsOverlay_ && !desktop_.open(3);
+            toolsOverlay_ = toolsOverlay_ && !display_.open(3);
             layout();
         }
         for (const auto index : closing_)
         {
-            desktop_.close(index);
+            display_.close(index);
             hoverWindow_ = noWindow;
             if (index == 3)
             {
@@ -193,92 +206,55 @@ public:
             draw();
             pendingDraw_ = false;
         }
-        return GO_ON;
     }
 
-    t_bunny_response close(const t_bunny_window *window)
+    bool close(std::size_t index)
     {
-        const auto index = desktop_.index(window);
         if (index == 0)
-            return EXIT_ON_CROSS;
-        if (index < desktop_.count())
+            return true;
+        if (index < display_.count())
             closing_.push_back(index);
-        return GO_ON;
+        return false;
     }
 
-    t_bunny_response moved(const t_bunny_window *window)
+    void moved(std::size_t index, Point point)
     {
-        const auto index = desktop_.index(window);
-        if (index >= desktop_.count())
-            return GO_ON;
+        if (index >= display_.count())
+            return;
         hoverWindow_ = index;
-        hover_ = *bunny_get_mouse_position();
+        hover_ = point;
         if (dragging_ && index == 0)
             placeMouse(hover_, true);
         invalidate();
-        return GO_ON;
     }
 
-    t_bunny_response resize(const t_bunny_window *window, const t_bunny_position &size)
+    void resize() { layout(); }
+
+    void focusChanged()
     {
-        if (auto *target = desktop_.at(desktop_.index(window)); target && size.x > 0 && size.y > 0
-            && (target->buffer.width != size.x
-                || target->buffer.height != size.y))
-        {
-            // LibLapin synchronizes the buffer dimensions and the SFML view here.
-            bunny_resize_window(target, size);
-        }
-        layout();
-        return GO_ON;
+        dragging_ = false;
+        kills_.breakSequence();
     }
 
-    t_bunny_response inputEvent(const t_bunny_event &event)
+    bool key(std::size_t index, Key key, bool ctrl, bool shift)
     {
-        switch (event.type)
-        {
-        case BET_LOST_FOCUS:
-        case BET_GAIN_FOCUS:
-            leftShift_ = rightShift_ = rightAlt_ = controlText_ = false;
-            dragging_ = false;
+        if (!(ctrl && key == Key::k) && key != Key::modifier)
             kills_.breakSequence();
-            return GO_ON;
-        case BET_TEXT_ENTERED:
-            return text(event.text.unicode);
-        case BET_KEY_PRESSED:
-        case BET_KEY_RELEASED:
+        if (ctrl && key == Key::q)
+            return true;
+        if (draw_.terminal() && key == Key::f3)
         {
-            const auto sym = event.key.sym;
-            const bool down = event.type == BET_KEY_PRESSED;
-            if (sym == BKS_LSHIFT) leftShift_ = down;
-            if (sym == BKS_RSHIFT) rightShift_ = down;
-            if (sym == BKS_RALT) rightAlt_ = down;
-
-            // X11 reports modifier states with the event. A release outside this window
-            // is never delivered here, so the cached LibLapin keyboard array can be stale.
-            const bool releasedControl = !down && (sym == BKS_LCONTROL || sym == BKS_RCONTROL);
-            controlText_ = event.key.control && !rightAlt_ && !releasedControl;
-            return down ? key(sym, controlText_, event.key.shift) : GO_ON;
+            setStudy(!studying_);
+            return false;
         }
-        default:
-            return GO_ON;
-        }
-    }
-
-    t_bunny_response key(t_bunny_keysym key, bool ctrl, bool shift)
-    {
-        if (!(ctrl && key == BKS_K) && !modifierKey(key))
-            kills_.breakSequence();
-        if (ctrl && key == BKS_Q)
-            return EXIT_ON_SUCCESS;
         if (studying_)
         {
-            const auto index = desktop_.index(bunny_get_window());
             if (index <= 1)
-                course_.key(key, index == 1, ctrl, shift, kills_);
+                course_.key(key, index == 1, ctrl, shift, kills_, display_);
             invalidate();
-            return GO_ON;
+            return false;
         }
-        if (key == BKS_ESCAPE)
+        if (key == Key::escape)
         {
             if (browser_ != Browser::idle)
                 endExplorer();
@@ -295,77 +271,84 @@ public:
                 setFocus(Focus::none);
             }
             invalidate();
-            return GO_ON;
+            return false;
+        }
+        if (draw_.terminal() && key == Key::f2 && browser_ == Browser::idle && !toolsOverlay_)
+        {
+            mainView_ = static_cast<View>((static_cast<int>(mainView_) + 1) % 3);
+            setFocus(mainView_ == View::editor ? Focus::editor
+                : mainView_ == View::terminal ? Focus::stdinBox : Focus::none);
+            return false;
         }
         switch (key)
         {
-        case BKS_F5: togglePlay(); return GO_ON;
-        case BKS_F6: restart(); return GO_ON;
-        case BKS_F7: goBack(); return GO_ON;
-        case BKS_F8: goForward(); return GO_ON;
-        case BKS_F9: openTools(); return GO_ON;
-        case BKS_F10: restoreWindows_ = true; return GO_ON;
+        case Key::f5: togglePlay(); return false;
+        case Key::f6: restart(); return false;
+        case Key::f7: goBack(); return false;
+        case Key::f8: goForward(); return false;
+        case Key::f9: openTools(); return false;
+        case Key::f10:
+            if (draw_.terminal()) startExplorer(Browser::save);
+            else restoreWindows_ = true;
+            return false;
         default: break;
         }
-        if (ctrl && key == BKS_O)
+        if (ctrl && key == Key::o)
         {
             startExplorer(Browser::open);
-            return GO_ON;
+            return false;
         }
-        if (ctrl && key == BKS_S)
+        if (ctrl && key == Key::s)
         {
             if (shift) startExplorer(Browser::save);
             else save();
-            return GO_ON;
+            return false;
         }
-        if (ctrl && key == BKS_D && focus_ == Focus::stdinBox)
+        if (ctrl && key == Key::d && focus_ == Focus::stdinBox)
         {
             submitInput(true);
-            return GO_ON;
+            return false;
         }
         if (auto *field = inputField())
         {
-            if (key == BKS_RETURN)
+            if (key == Key::enter)
             {
                 if (focus_ == Focus::command) executeCommand();
                 else if (focus_ == Focus::filename) acceptPath();
                 else submitInput(false);
             }
-            else if (focus_ == Focus::filename && !ctrl && (key == BKS_UP || key == BKS_DOWN))
-                selectExplorer(key == BKS_UP ? -1 : 1);
-            else if (ctrl && key == BKS_V)
+            else if (focus_ == Focus::filename && !ctrl && (key == Key::up || key == Key::down))
+                selectExplorer(key == Key::up ? -1 : 1);
+            else if (ctrl && key == Key::v)
             {
-                const auto bytes = sf::Clipboard::getString().toUtf8();
-                field->insert(decodeUtf8(std::string(bytes.begin(), bytes.end())));
+                field->insert(decodeUtf8(display_.clipboard()));
             }
             else
                 field->key(key, ctrl);
             invalidate();
-            return GO_ON;
+            return false;
         }
         if (!editing_)
-            return GO_ON;
+            return false;
 
         auto &ed = doc().editor;
         const auto revision = ed.revision();
-        if (!editKey(ed, key, ctrl, shift, codeRows, true, kills_))
-            return GO_ON;
+        if (!editKey(ed, key, ctrl, shift, codeRows, true, kills_, display_))
+            return false;
         afterEdit(ed.revision() != revision);
-        return GO_ON;
+        return false;
     }
 
-    t_bunny_response text(std::uint32_t unicode)
+    void text(std::size_t index, char32_t character)
     {
-        if (unicode < 32 || unicode == 127 || unicode > 0x10ffff
-            || (unicode >= 0xd800 && unicode <= 0xdfff) || controlText_)
-            return GO_ON;
+        if (character < 32 || character == 127 || character > 0x10ffff
+            || (character >= 0xd800 && character <= 0xdfff))
+            return;
         kills_.breakSequence();
-        const char32_t character = unicode;
         if (studying_)
         {
-            const auto index = desktop_.index(bunny_get_window());
             if (index <= 1)
-                course_.text(character, index == 1);
+                course_.insert(std::u32string_view(&character, 1), index == 1);
             invalidate();
         }
         else if (auto *field = inputField())
@@ -375,36 +358,47 @@ public:
         }
         else if (editing_ && doc().editor.type(character))
             afterEdit(true);
-        return GO_ON;
     }
 
-    t_bunny_response click(t_bunny_event_state state, t_bunny_mouse_button button)
+    void paste(std::string_view bytes)
     {
-        if (button != BMB_LEFT)
-            return GO_ON;
-        if (state == GO_UP)
+        kills_.breakSequence();
+        if (studying_)
+        {
+            course_.insert(decodeUtf8(bytes, true, false), false);
+            invalidate();
+        }
+        else if (auto *field = inputField())
+        {
+            field->insert(decodeUtf8(bytes, true, false));
+            invalidate();
+        }
+        else if (editing_ && doc().editor.insert(decodeUtf8(bytes, true)))
+            afterEdit(true);
+    }
+
+    bool click(std::size_t index, Point p, bool down, bool shift)
+    {
+        if (!down)
         {
             dragging_ = false;
-            return GO_ON;
+            return false;
         }
         kills_.breakSequence();
-        const auto *window = bunny_get_window();
-        const auto index = desktop_.index(window);
-        if (index >= desktop_.count())
-            return GO_ON;
-        const auto p = *bunny_get_mouse_position();
+        if (index >= display_.count())
+            return false;
         hoverWindow_ = index;
         hover_ = p;
         if (index == 0 && quitButton.contains(p))
-            return EXIT_ON_SUCCESS;
+            return true;
         if (index != 0 && auxiliaryClose(index).contains(p))
-            return close(window);
+            return close(index);
         if (index == 0 && modeButton.contains(p))
             setStudy(!studying_);
         else if (studying_)
         {
             if (index <= 1)
-                course_.click(p, index == 1, leftShift_ || rightShift_);
+                course_.click(p, index == 1, shift);
         }
         else if (index == 3 || (index == 0 && toolsOverlay_))
             toolClick(p, index != 0);
@@ -413,26 +407,21 @@ public:
         else if (index == 1)
             memoryClick(p);
         else if (index == 0)
-            editorClick(p);
+            editorClick(p, shift);
         invalidate();
-        return GO_ON;
+        return false;
     }
 
-    t_bunny_response wheel(int wheel, int delta)
+    void wheel(std::size_t index, Point p, int wheel, int delta)
     {
-        if (!delta)
-            return GO_ON;
-        const auto *window = bunny_get_window();
-        const auto index = desktop_.index(window);
-        if (index >= desktop_.count())
-            return GO_ON;
-        const auto p = *bunny_get_mouse_position();
+        if (!delta || index >= display_.count())
+            return;
         if (studying_)
         {
             if (index <= 1)
                 course_.wheel(p, index == 1, wheel, delta);
             invalidate();
-            return GO_ON;
+            return;
         }
         const bool tools = index == 3 || (index == 0 && toolsOverlay_);
         if (tools)
@@ -442,7 +431,7 @@ public:
                 explorerTop_ = std::clamp(explorerTop_ - delta * 3, 0, maxExplorerTop());
         }
         else if ((index == 1 || (index == 0 && showingInMain(View::memory))) && memoryView.contains(p))
-            memoryScroll_ = std::clamp(memoryScroll_ - delta * 54, 0, memoryMaxScroll_);
+            memoryScroll_ = std::clamp(memoryScroll_ - delta * (draw_.terminal() ? 3 * terminalCellHeight : 54), 0, memoryMaxScroll_);
         else if ((index == 2 && fullTerminal(auxiliaryBody(2)).contains(p))
                  || (index == 0 && showingInMain(View::terminal) && mainTerminal().contains(p)))
         {
@@ -459,12 +448,11 @@ public:
                 doc().editor.top = std::clamp(doc().editor.top - delta * 3, 0, maxCodeTop());
         }
         invalidate();
-        return GO_ON;
     }
 
 private:
-    Desktop &desktop_;
-    Painter draw_;
+    UiDisplay &display_;
+    Painter &draw_;
     SourceDirectory source_;
     CourseView course_;
     KillBuffer kills_;
@@ -514,14 +502,10 @@ private:
     std::vector<ArrayRow> arrays_;
     int memoryScroll_ = 0;
     int memoryMaxScroll_ = 0;
-    t_bunny_position hover_{-1, -1};
+    Point hover_{-1, -1};
     bool playing_ = false;
     bool editing_ = false;
     bool dragging_ = false;
-    bool leftShift_ = false;
-    bool rightShift_ = false;
-    bool rightAlt_ = false;
-    bool controlText_ = false;
     bool pendingDraw_ = true;
     bool caretVisible_ = false;
     Clock::time_point caretTime_ = Clock::now();
@@ -549,7 +533,11 @@ private:
             course_.enter(openSingle);
         }
         else
+        {
             course_.leave();
+            if (draw_.terminal() && mainView_ == View::editor)
+                setFocus(Focus::editor);
+        }
         layout();
     }
 
@@ -628,7 +616,7 @@ private:
                 resumeInput_ = continuous;
                 setFocus(Focus::stdinBox);
                 toolsOverlay_ = false;
-                if (narrow_ && !desktop_.open(2))
+                if (narrow_ && !display_.open(2))
                     mainView_ = View::terminal;
             }
         }
@@ -749,11 +737,13 @@ private:
         invalidate();
     }
 
-    void placeMouse(t_bunny_position p, bool extend)
+    void placeMouse(Point p, bool extend)
     {
         auto &ed = doc().editor;
-        const auto row = std::clamp((p.y - codeView.y) / codePitch, 0, std::max(0, codeRows - 1)) + ed.top;
-        const auto col = std::max(0, (p.x - codeX + glyphWidth / 2) / glyphWidth) + ed.left;
+        const auto row = std::clamp((p.y - codeView.y) / codeLinePitch(draw_.terminal()), 0, std::max(0, codeRows - 1)) + ed.top;
+        const int glyph = codeGlyphWidth(draw_.terminal());
+        const int bias = draw_.terminal() ? 0 : glyph / 2;
+        const auto col = std::max(0, (p.x - codeX + bias) / glyph) + ed.left;
         const auto target = ed.at(row, col);
         if (target != ed.cursor() || !extend)
         {
@@ -762,12 +752,7 @@ private:
         }
     }
 
-    Rect windowArea(std::size_t index) const
-    {
-        const auto *window = desktop_.at(index);
-        return window ? Rect{0, 0, static_cast<int>(window->buffer.width),
-                              static_cast<int>(window->buffer.height)} : Rect{};
-    }
+    Rect windowArea(std::size_t index) const { return display_.area(index); }
 
     Rect auxiliaryBody(std::size_t index) const
     {
@@ -784,7 +769,7 @@ private:
 
     bool showingInMain(View view) const
     {
-        const bool detached = view != View::editor && desktop_.open(static_cast<std::size_t>(view));
+        const bool detached = view != View::editor && display_.open(static_cast<std::size_t>(view));
         return !detached && (!narrow_ || mainView_ == view);
     }
 
@@ -796,8 +781,8 @@ private:
         for (std::size_t i = 0; i < shortcuts.size(); ++i)
         {
             const auto &shortcut = shortcuts[i];
-            const int keyWidth = Painter::textWidth(shortcut.key, 12, true) + 12;
-            const int itemWidth = keyWidth + 7 + Painter::textWidth(shortcut.label, 13);
+            const int keyWidth = draw_.textWidth(shortcut.key, 12, true) + 12;
+            const int itemWidth = keyWidth + 7 + draw_.textWidth(shortcut.label, 13);
             if (x > space.x && x + itemWidth > space.right())
             {
                 x = space.x;
@@ -812,50 +797,63 @@ private:
     void layout()
     {
         const auto window = windowArea(0);
-        const int margin = windowMargin(window);
-        narrow_ = window.w < 940 || window.h < 580;
-        if ((mainView_ == View::memory && desktop_.open(1))
-            || (mainView_ == View::terminal && desktop_.open(2)))
+        const bool tui = draw_.terminal();
+        const int margin = tui ? terminalCellWidth : windowMargin(window);
+        const int row = terminalCellHeight;
+        narrow_ = tui ? window.w < 116 * terminalCellWidth || window.h < 32 * row
+                      : window.w < 940 || window.h < 580;
+        if ((mainView_ == View::memory && display_.open(1))
+            || (mainView_ == View::terminal && display_.open(2)))
             mainView_ = View::editor;
-        if (narrow_ && !desktop_.open(2) && focus_ == Focus::stdinBox)
+        if (narrow_ && !display_.open(2) && focus_ == Focus::stdinBox)
             mainView_ = View::terminal;
-        titleBar = {0, 0, window.w, narrow_ ? 52 : 72};
+        titleBar = {0, 0, window.w, tui ? row : narrow_ ? 52 : 72};
         const int quitWidth = window.w < 360 ? 40 : 84;
-        quitButton = {window.right() - margin - quitWidth, (titleBar.h - 28) / 2, quitWidth, 28};
-        const int shortcutsBottom = placeShortcuts({margin, titleBar.bottom() + 8, window.w - 2 * margin, 0});
-        const int navY = shortcutsBottom + 13;
-        const int navWidth = narrow_ ? 92 : 118;
-        fileButton = {window.right() - margin - navWidth, navY, navWidth, 32};
-        toolsButton = {fileButton.x - navWidth - 8, navY, navWidth, 32};
+        const int quitHeight = tui ? row : 28;
+        quitButton = {window.right() - margin - quitWidth, (titleBar.h - quitHeight) / 2, quitWidth, quitHeight};
+        const int navY = tui ? row : placeShortcuts({margin, titleBar.bottom() + 8, window.w - 2 * margin, 0}) + 13;
+        const int navWidth = tui ? std::min(136, (window.w - 4 * margin) / 3) : narrow_ ? 92 : 118;
+        const int navHeight = tui ? row : 32;
+        fileButton = {window.right() - margin - navWidth, navY, navWidth, navHeight};
+        toolsButton = {fileButton.x - navWidth - 8, navY, navWidth, navHeight};
         const int modeWidth = studying_ ? std::min(128, window.w - 2 * margin)
             : std::clamp(toolsButton.x - margin - 8, 0, 128);
-        modeButton = {margin, studying_ ? titleBar.bottom() + 8 : navY, modeWidth, 32};
+        modeButton = {margin, studying_ && !tui ? titleBar.bottom() + 8 : navY, modeWidth, navHeight};
         const int menuWidth = std::min(326, window.w - 2 * margin);
-        fileMenu = {window.right() - margin - menuWidth, fileButton.bottom() + 4, menuWidth, 10 + 36 * fileRows};
+        fileMenu = {window.right() - margin - menuWidth, fileButton.bottom() + (tui ? 0 : 4),
+                    menuWidth, 10 + 36 * (tui ? fileRows - 1 : fileRows)};
         if (studying_)
-            course_.layout(inset(window, margin, modeButton.bottom() + 14, margin), auxiliaryBody(1));
+            course_.layout(inset(window, margin, modeButton.bottom() + (tui ? 0 : 14), tui ? 0 : margin), auxiliaryBody(1));
 
         viewTabs.fill({});
-        const int tabCount = 1 + !desktop_.open(1) + !desktop_.open(2);
+        const int tabCount = 1 + !display_.open(1) + !display_.open(2);
         const bool showTabs = narrow_ && tabCount > 1;
         if (showTabs)
         {
-            const Rect row{margin, fileButton.bottom() + 8, window.w - 2 * margin, 29};
+            const Rect tabs{margin, fileButton.bottom() + (tui ? 0 : 8), window.w - 2 * margin, tui ? row : 29};
             int position = 0;
             for (const auto view : {View::editor, View::memory, View::terminal})
             {
                 const auto index = static_cast<std::size_t>(view);
-                if (index && desktop_.open(index))
+                if (index && display_.open(index))
                     continue;
-                viewTabs[index] = horizontalPart(row, position++, tabCount);
+                viewTabs[index] = horizontalPart(tabs, position++, tabCount, tui ? terminalCellWidth : 6);
             }
         }
 
-        transport = inset(window, margin, std::max(0, window.h - margin - 36), margin);
-        statusArea = narrow_ ? Rect{margin, transport.y - 23, transport.w, 20}
-                             : Rect{margin + 673, transport.y + 9, transport.w - 673, 20};
-        const int contentTop = fileButton.bottom() + (showTabs ? 46 : 15);
-        const int contentBottom = narrow_ ? statusArea.y - 6 : transport.y - 14;
+        if (tui)
+        {
+            transport = inset(window, margin, std::max(0, window.h - 2 * row), row);
+            statusArea = {margin, transport.bottom(), transport.w, row};
+        }
+        else
+        {
+            transport = inset(window, margin, std::max(0, window.h - margin - 36), margin);
+            statusArea = narrow_ ? Rect{margin, transport.y - 23, transport.w, 20}
+                                 : Rect{margin + 673, transport.y + 9, transport.w - 673, 20};
+        }
+        const int contentTop = fileButton.bottom() + (tui ? (showTabs ? row : 0) : showTabs ? 46 : 15);
+        const int contentBottom = tui ? transport.y : narrow_ ? statusArea.y - 6 : transport.y - 14;
         mainArea = inset(window, margin, contentTop, window.h - contentBottom);
 
         if (narrow_)
@@ -877,28 +875,31 @@ private:
             speedButton = {playButton.right() + 10, transport.y, 92, transport.h};
         }
 
-        const int left = (mainArea.w - 16) * 41 / 100;
+        const int split = (mainArea.w - 16) * 41 / 100;
+        const int left = tui ? split / terminalCellWidth * terminalCellWidth : split;
         auto workspace = mainArea;
         compactCompile = {};
         compactIo = {};
-        if (!desktop_.open(2) && !narrow_)
+        if (!display_.open(2) && !narrow_)
         {
-            const int dockHeight = std::min(145, mainArea.h / 3);
+            const int dockHeight = tui ? std::min(9, mainArea.h / (3 * row)) * row
+                                       : std::min(145, mainArea.h / 3);
             const int dockTop = mainArea.bottom() - dockHeight;
             compactCompile = {mainArea.x, dockTop, left, dockHeight};
             compactIo = {mainArea.x + left + 16, dockTop, mainArea.w - left - 16, dockHeight};
-            workspace.h = std::max(0, dockTop - 15 - workspace.y);
+            workspace.h = std::max(0, dockTop - (tui ? 0 : 15) - workspace.y);
         }
 
         codePanel = workspace;
-        if (!narrow_ && !desktop_.open(1))
+        if (!narrow_ && !display_.open(1))
             codePanel.w = left;
-        codeView = {codePanel.x + 1, codePanel.y + 43, codePanel.w - 2, std::max(0, codePanel.h - 76)};
-        codeX = codeView.x + 54;
-        codeRows = codeView.h / codePitch;
-        codeColumns = std::max(0, (codeView.right() - codeX - 10) / glyphWidth);
+        codeView = tui ? inset(codePanel, terminalCellWidth, row, row)
+            : Rect{codePanel.x + 1, codePanel.y + 43, codePanel.w - 2, std::max(0, codePanel.h - 76)};
+        codeX = codeView.x + codeGutter(draw_.terminal());
+        codeRows = codeView.h / codeLinePitch(draw_.terminal());
+        codeColumns = std::max(0, (codeView.right() - codeX - 10) / codeGlyphWidth(draw_.terminal()));
 
-        if (desktop_.open(1))
+        if (display_.open(1))
             memoryPanel = auxiliaryBody(1);
         else if (narrow_)
             memoryPanel = workspace;
@@ -922,6 +923,15 @@ private:
     void drawTitle(std::string_view label, unsigned tint)
     {
         const auto window = windowArea(0);
+        if (draw_.terminal())
+        {
+            const int margin = terminalCellWidth;
+            draw_.text(margin, 0, "bstep", color::text, 16, true, true);
+            draw_.text(margin + 8 * terminalCellWidth, 0, label, tint, 16, true, true,
+                       quitButton.x - margin - 9 * terminalCellWidth);
+            button(quitButton, quitButton.w < 60 ? "×" : "Quitter", {}, commandColor::close);
+            return;
+        }
         const int margin = windowMargin(window);
         draw_.rect({0, titleBar.bottom() - 1, window.w, 1}, color::rule);
         const int statusWidth = std::min(186, (quitButton.x - margin) / 2);
@@ -956,19 +966,22 @@ private:
             : modified() ? "CODE MODIFIÉ" : playing_ ? "EN LECTURE"
             : !state ? "PRÊT" : state->finished ? "TERMINÉ" : "EN PAUSE";
         drawTitle(label, tint);
-        for (std::size_t i = 0; i < shortcuts.size(); ++i)
+        if (!draw_.terminal())
         {
-            const auto &shortcut = shortcuts[i];
-            const Rect badge = shortcutKeys[i];
-            const int labelX = badge.right() + 7;
-            draw_.frame(badge, color::background, shortcut.accent);
-            draw_.text(badge.x + 6, badge.y + 2, shortcut.key, shortcut.accent, 12, true, true);
-            draw_.text(labelX, badge.y + 1, shortcut.label, color::muted, 13, false, false,
-                       window.right() - margin - labelX);
+            for (std::size_t i = 0; i < shortcuts.size(); ++i)
+            {
+                const auto &shortcut = shortcuts[i];
+                const Rect badge = shortcutKeys[i];
+                const int labelX = badge.right() + 7;
+                draw_.frame(badge, color::background, shortcut.accent);
+                draw_.text(badge.x + 6, badge.y + 2, shortcut.key, shortcut.accent, 12, true, true);
+                draw_.text(labelX, badge.y + 1, shortcut.label, color::muted, 13, false, false,
+                           window.right() - margin - labelX);
+            }
+            draw_.rect({margin, fileButton.y - 6, window.w - 2 * margin, 1}, color::grid);
         }
-        draw_.rect({margin, fileButton.y - 6, window.w - 2 * margin, 1}, color::grid);
 
-        button(modeButton, "Parcours", {}, commandColor::course);
+        button(modeButton, "Parcours", draw_.terminal() ? "F3" : "", commandColor::course);
         button(toolsButton, "Débogage", "F9", commandColor::debug);
         button(fileButton, "Fichier", {}, commandColor::file);
         constexpr std::array<std::string_view, 3> names{"Éditeur", "Mémoire", "Terminal"};
@@ -986,7 +999,7 @@ private:
         const std::string location = frame() ? std::string(frame()->functionName()) + "() · " + doc().displayName
                                              : doc().displayName;
         draw_.text(codePanel.x + 155, codePanel.y + 16, fitMono(location, (codePanel.w - 164) / 7), color::type, 12, true);
-        if (codePanel.h < 76)
+        if (codePanel.h < (draw_.terminal() ? 3 * terminalCellHeight : 76))
             return;
         const auto &ed = doc().editor;
         const auto [caretRow, caretCol] = ed.location();
@@ -994,7 +1007,8 @@ private:
         const int active = state ? machine_->nextLine() : compileError_ ? compileError_->where.line : 0;
         paintSource(draw_, ed, codeView, {active, state ? state->lastLine : 0,
                                         compileError_ || (state && state->error), caretVisible_ && editing_});
-        draw_.rect({codePanel.x, codeView.bottom() + 1, codePanel.w, 1}, color::rule);
+        if (!draw_.terminal())
+            draw_.rect({codePanel.x, codeView.bottom() + 1, codePanel.w, 1}, color::rule);
         std::string detail = "Clique dans le code pour l'éditer";
         if (modified())
             detail = "Pas suivant ou Lecture relance le code modifié";
@@ -1208,7 +1222,7 @@ private:
             return;
         draw_.frame(memoryPanel, color::panel, color::rule);
         const auto *state = frame();
-        const std::string title = desktop_.open(1)
+        const std::string title = display_.open(1)
             ? (state ? std::string("Fonction courante · ") + std::string(state->functionName()) + "()" : "État de la mémoire")
             : "Mémoire";
         const bool narrow = memoryPanel.w < 620;
@@ -1405,6 +1419,11 @@ private:
             tab_ = docs_.size() - 1;
         }
         endExplorer();
+        if (draw_.terminal())
+        {
+            mainView_ = View::editor;
+            setFocus(Focus::editor);
+        }
         prepare();
         follow();
     }
@@ -1476,7 +1495,7 @@ private:
         fileMenuOpen_ = false;
         browser_ = mode;
         debugTools_ = false;
-        toolsOverlay_ = !desktop_.open(3);
+        toolsOverlay_ = !display_.open(3);
         explorerTop_ = 0;
         explorerSelection_ = -1;
         browserNote_.clear();
@@ -1499,7 +1518,7 @@ private:
     {
         fileMenuOpen_ = false;
         debugTools_ = true;
-        if (!desktop_.open(3))
+        if (!display_.open(3))
         {
             toolsOverlay_ = !toolsOverlay_;
             if (!toolsOverlay_)
@@ -1703,7 +1722,7 @@ private:
         invalidate();
     }
 
-    void memoryClick(t_bunny_position p)
+    void memoryClick(Point p)
     {
         if (!memoryView.contains(p))
             return;
@@ -1716,7 +1735,7 @@ private:
             }
     }
 
-    void editorClick(t_bunny_position p)
+    void editorClick(Point p, bool shift)
     {
         if (fileButton.contains(p))
         {
@@ -1747,7 +1766,8 @@ private:
             if (viewTabs[i].contains(p))
             {
                 mainView_ = static_cast<View>(i);
-                setFocus(Focus::none);
+                setFocus(!draw_.terminal() ? Focus::none : mainView_ == View::editor ? Focus::editor
+                    : mainView_ == View::terminal ? Focus::stdinBox : Focus::none);
                 return;
             }
         if (showingInMain(View::terminal) && mainTerminal().contains(p))
@@ -1760,7 +1780,7 @@ private:
             playing_ = false;
             setFocus(Focus::editor);
             dragging_ = true;
-            placeMouse(p, leftShift_ || rightShift_);
+            placeMouse(p, shift);
             return;
         }
         setFocus(Focus::none);
@@ -1784,13 +1804,14 @@ private:
             "Brouillon", "Ouvrir…", "Enregistrer", "Enregistrer sous…", "Rouvrir les fenêtres"
         };
         constexpr std::array<std::string_view, fileRows> keys{"", "Ctrl+O", "Ctrl+S", "Ctrl+Maj+S", "F10"};
-        for (int i = 0; i < fileRows; ++i)
+        const bool tui = draw_.terminal();
+        for (int i = 0; i < fileRows - tui; ++i)
         {
             const Rect row{fileMenu.x + 5, fileMenu.y + 7 + i * 36, fileMenu.w - 10, 34};
             if (row.contains(hover_))
                 draw_.rect(row, color::selection);
             draw_.text(row.x + 9, row.y + 7, labels[i], color::text, 16);
-            draw_.text(row.right() - 102, row.y + 10, keys[i], color::muted, 12, true);
+            draw_.text(row.right() - 102, row.y + 10, tui && i == 3 ? "F10" : keys[i], color::muted, 12, true);
         }
     }
 
@@ -1798,21 +1819,44 @@ private:
     {
         const auto *state = frame();
         const bool active = state && state->steps && !state->error && !state->finished;
+        if (draw_.terminal())
+        {
+            const int rows = std::min(active ? 4 : 6, area.h / (3 * terminalCellHeight));
+            return {area.x, area.y, area.w, rows * terminalCellHeight};
+        }
         const int wanted = active ? 130 : 268;
         return {area.x, area.y, area.w, std::min(wanted, area.h * 2 / 5)};
     }
 
     Rect fullTerminal(Rect area) const
     {
-        const int y = std::min(fullCompiler(area).bottom() + 12, area.bottom());
+        const int y = std::min(fullCompiler(area).bottom() + (draw_.terminal() ? 0 : 12), area.bottom());
         return {area.x, y, area.w, area.bottom() - y};
     }
 
     Rect mainCompiler() const { return narrow_ ? fullCompiler(mainArea) : compactCompile; }
     Rect mainTerminal() const { return narrow_ ? fullTerminal(mainArea) : compactIo; }
 
-    static TerminalLayout terminalLayout(Rect box, bool merged)
+    TerminalLayout terminalLayout(Rect box, bool merged) const
     {
+        if (draw_.terminal())
+        {
+            constexpr int cell = terminalCellWidth, row = terminalCellHeight;
+            const int checkboxWidth = std::min(25 * cell, box.w / 2);
+            const Rect merge{box.right() - checkboxWidth - cell, box.y, checkboxWidth, row};
+            const auto pane = inset(box, cell, row, row);
+            const int cols = pane.w / cell;
+            const int errWidth = cols / 5 * cell;
+            const int inWidth = merged ? 0 : cols / 3 * cell;
+            const Rect out{pane.x, pane.y, pane.w - errWidth - inWidth, pane.h};
+            const Rect err{out.right(), pane.y, errWidth, pane.h};
+            const Rect in = merged ? out : Rect{err.right(), pane.y, inWidth, pane.h};
+            if (in.h < 3 * row || in.w < 8 * cell)
+                return {merge, out, err, in, {}, {}};
+            const Rect edit{in.x + cell, in.bottom() - 2 * row, in.w - 7 * cell, row};
+            const Rect eof{in.right() - 6 * cell, edit.y, 5 * cell, row};
+            return {merge, out, err, in, edit, eof};
+        }
         const int checkboxWidth = box.w >= 400 ? 150 : 80;
         const Rect merge{box.right() - checkboxWidth - 8, box.y + 4, checkboxWidth, 25};
         const Rect pane{box.x + 1, box.y + 33, box.w - 2, std::max(0, box.h - 34)};
@@ -1845,7 +1889,7 @@ private:
         return {merge, out, err, in, edit, eof};
     }
 
-    void terminalClick(t_bunny_position p, Rect box)
+    void terminalClick(Point p, Rect box)
     {
         const auto rects = terminalLayout(box, terminalMerged_);
         if (rects.merge.contains(p))
@@ -1905,11 +1949,17 @@ private:
         const bool waiting = state && machine_->waiting();
         draw_.text(box.x + 13, box.y + 7, waiting ? "Terminal · attente sur stdin" : "Terminal",
                    waiting ? color::gold : color::text, 16, false, false, rects.merge.x - box.x - 23);
-        draw_.frame({rects.merge.x + 4, rects.merge.y + 6, 13, 13}, color::background, commandColor::terminal);
-        if (terminalMerged_)
-            draw_.rect({rects.merge.x + 7, rects.merge.y + 9, 7, 7}, color::white);
-        draw_.text(rects.merge.x + 24, rects.merge.y + 4, box.w >= 400 ? "stdin et stdout réunis" : "Fusion",
-                   color::muted, 12, false, false, rects.merge.w - 25);
+        if (draw_.terminal())
+            button(rects.merge, terminalMerged_ ? "Séparer stdin/stdout" : "Fusionner stdin/stdout",
+                   {}, commandColor::terminal);
+        else
+        {
+            draw_.frame({rects.merge.x + 4, rects.merge.y + 6, 13, 13}, color::background, commandColor::terminal);
+            if (terminalMerged_)
+                draw_.rect({rects.merge.x + 7, rects.merge.y + 9, 7, 7}, color::white);
+            draw_.text(rects.merge.x + 24, rects.merge.y + 4, box.w >= 400 ? "stdin et stdout réunis" : "Fusion",
+                       color::muted, 12, false, false, rects.merge.w - 25);
+        }
         draw_.frame(rects.out, color::editor, color::rule);
         draw_.frame(rects.err, color::editor, commandColor::terminal);
         if (!terminalMerged_)
@@ -1941,20 +1991,22 @@ private:
     ToolsLayout toolsLayout(bool separate) const
     {
         ToolsLayout layout;
+        const bool tui = draw_.terminal();
+        const int rowHeight = tui ? terminalCellHeight : 29;
         Rect body = separate ? auxiliaryBody(3) : mainArea;
         if (!separate)
         {
             layout.frame = body;
-            layout.close = {body.right() - 43, body.y + 7, 32, 28};
-            body = inset(body, 10, 43, 10);
+            layout.close = {body.right() - 43, body.y + (tui ? 0 : 7), 32, tui ? rowHeight : 28};
+            body = tui ? inset(body, terminalCellWidth, rowHeight, rowHeight) : inset(body, 10, 43, 10);
         }
         layout.tabbed = body.w < 880;
         if (layout.tabbed)
         {
-            const Rect row{body.x, body.y, body.w, 29};
+            const Rect row{body.x, body.y, body.w, rowHeight};
             layout.fileTab = horizontalPart(row, 0, 2);
             layout.debugTab = horizontalPart(row, 1, 2);
-            const int offset = std::min(body.h, 37);
+            const int offset = std::min(body.h, tui ? rowHeight : 37);
             body.y += offset;
             body.h -= offset;
         }
@@ -1969,26 +2021,54 @@ private:
         }
         layout.shell = debugger;
         layout.shell.h = debugger.h * 54 / 100;
-        const int watchTop = std::min(layout.shell.bottom() + 12, debugger.bottom());
+        if (tui)
+            layout.shell.h = layout.shell.h / rowHeight * rowHeight;
+        const int watchTop = std::min(layout.shell.bottom() + (tui ? 0 : 12), debugger.bottom());
         layout.watches = {debugger.x, watchTop, debugger.w, debugger.bottom() - watchTop};
         return layout;
     }
 
-    static Rect pathField(Rect box) { return {box.x + 13, box.bottom() - 72, box.w - 116, 29}; }
-    static Rect shellField(Rect box) { return {box.x + 13, box.bottom() - 43, box.w - 26, 29}; }
-    static Rect explorerUp(Rect box) { return {box.x + 13, box.y + 42, 97, 30}; }
-    static Rect explorerMkDir(Rect box) { return {box.right() - 159, box.y + 42, 146, 30}; }
-    static Rect explorerAction(Rect box) { return {box.right() - 95, box.bottom() - 72, 82, 29}; }
-    static constexpr int filesTop = 116;
-    static constexpr int filePitch = 25;
+    Rect pathField(Rect box) const
+    {
+        return {box.x + 13, box.bottom() - (draw_.terminal() ? 2 * terminalCellHeight : 72),
+                box.w - 116, draw_.terminal() ? terminalCellHeight : 29};
+    }
+
+    Rect shellField(Rect box) const
+    {
+        return {box.x + 13, box.bottom() - (draw_.terminal() ? 2 * terminalCellHeight : 43),
+                box.w - 26, draw_.terminal() ? terminalCellHeight : 29};
+    }
+
+    Rect explorerUp(Rect box) const
+    {
+        return {box.x + 13, box.y + (draw_.terminal() ? terminalCellHeight : 42),
+                97, draw_.terminal() ? terminalCellHeight : 30};
+    }
+
+    Rect explorerMkDir(Rect box) const
+    {
+        const auto row = explorerUp(box);
+        return {box.right() - 159, row.y, 146, row.h};
+    }
+
+    Rect explorerAction(Rect box) const
+    {
+        const auto field = pathField(box);
+        return {box.right() - 95, field.y, 82, field.h};
+    }
+
+    int filesTop() const { return draw_.terminal() ? 4 * terminalCellHeight : 116; }
+    int filePitch() const { return draw_.terminal() ? terminalCellHeight : 25; }
 
     int explorerRows() const
     {
-        return std::max(0, (toolsLayout(desktop_.open(3)).explorer.h - filesTop - 91) / filePitch);
+        const int bottom = draw_.terminal() ? 2 * terminalCellHeight : 91;
+        return std::max(0, (toolsLayout(display_.open(3)).explorer.h - filesTop() - bottom) / filePitch());
     }
     int maxExplorerTop() const { return std::max(0, static_cast<int>(source_.entries.size()) - explorerRows()); }
 
-    void toolClick(t_bunny_position p, bool separate)
+    void toolClick(Point p, bool separate)
     {
         const auto panes = toolsLayout(separate);
         if (!separate && (panes.close.contains(p) || !panes.frame.contains(p)))
@@ -2056,8 +2136,8 @@ private:
             return;
         }
         setFocus(Focus::filename);
-        if (p.y >= explorer.y + filesTop && p.y < explorer.y + filesTop + explorerRows() * filePitch)
-            chooseEntry((p.y - explorer.y - filesTop) / filePitch + explorerTop_);
+        if (p.y >= explorer.y + filesTop() && p.y < explorer.y + filesTop() + explorerRows() * filePitch())
+            chooseEntry((p.y - explorer.y - filesTop()) / filePitch() + explorerTop_);
     }
 
     void drawExplorer(Rect box)
@@ -2076,16 +2156,17 @@ private:
         }
         button(explorerUp(box), "Parent", {}, commandColor::file, false, source_.current != source_.root);
         button(explorerMkDir(box), "Nouveau dossier", {}, commandColor::file);
-        draw_.text(box.x + 13, box.y + 85, fitMono(source_.current.string(), (box.w - 26) / 8),
+        const int pathY = box.y + (draw_.terminal() ? 2 * terminalCellHeight : 85);
+        draw_.text(box.x + 13, pathY, fitMono(source_.current.string(), (box.w - 26) / 8),
                    color::muted, 14, true);
-        draw_.rect({box.x + 1, box.y + filesTop - 8, box.w - 2, 1}, color::rule);
+        draw_.rect({box.x + 1, box.y + filesTop() - 8, box.w - 2, 1}, color::rule);
         for (int row = 0; row < explorerRows(); ++row)
         {
             const auto index = explorerTop_ + row;
             if (index >= static_cast<int>(source_.entries.size()))
                 break;
             const auto &entry = source_.entries[index];
-            const Rect item{box.x + 6, box.y + filesTop + row * filePitch, box.w - 12, filePitch - 1};
+            const Rect item{box.x + 6, box.y + filesTop() + row * filePitch(), box.w - 12, filePitch() - 1};
             if (item.contains(hover_) || index == explorerSelection_)
                 draw_.rect(item, color::selection);
             const std::string prefix = entry.directory ? "  /  " : "     ";
@@ -2097,7 +2178,8 @@ private:
         const std::string_view action = browser_ == Browser::open ? "Ouvrir" : browser_ == Browser::folder ? "Créer" : "Écrire";
         button(explorerAction(box), action, {}, commandColor::file, true);
         if (!browserNote_.empty())
-            draw_.text(box.x + 13, box.bottom() - 30, fitMono(browserNote_, (box.w - 26) / 8),
+            draw_.text(box.x + 13, box.bottom() - (draw_.terminal() ? terminalCellHeight : 30),
+                       fitMono(browserNote_, (box.w - 26) / 8),
                        color::gold, 14, true);
     }
 
@@ -2124,7 +2206,9 @@ private:
         }
         if (display.empty())
             display = "watch fonction.variable   ·   break if expression";
-        vt::paint(draw_, {box.x + 13, box.y + 44, box.w - 26, box.h - 50}, display);
+        const auto log = draw_.terminal() ? inset(box, 13, terminalCellHeight, terminalCellHeight)
+                                          : inset(box, 13, 44, 6);
+        vt::paint(draw_, log, display);
     }
 
     void drawTools(bool separate)
@@ -2151,8 +2235,9 @@ private:
         draw_.frame(shell, color::panel, color::rule);
         draw_.text(shell.x + 13, shell.y + 10, "Console de débogage", color::text, 20,
                    false, false, shell.w - 26);
-        vt::paint(draw_, {shell.x + 13, shell.y + 46, shell.w - 26, shell.h - 101},
-                  shellLog_.empty() ? "help   ·   Commandes disponibles" : shellLog_);
+        const auto log = draw_.terminal() ? inset(shell, 13, terminalCellHeight, 2 * terminalCellHeight)
+                                          : inset(shell, 13, 46, 55);
+        vt::paint(draw_, log, shellLog_.empty() ? "help   ·   Commandes disponibles" : shellLog_);
         commandLine_.paint(draw_, shellField(shell), "Commande", focus_ == Focus::command);
         drawWatches(panes.watches);
     }
@@ -2181,7 +2266,15 @@ private:
         }
         if (!fileNote_.empty())
             status = status.empty() ? fileNote_ : status + "  ·  " + fileNote_;
-        draw_.text(statusArea.x, statusArea.y + 2, fitMono(status, statusArea.w / 7), color::muted, 12, true);
+        if (draw_.terminal())
+        {
+            if (!status.empty())
+                status += " · ";
+            status += "F2 Vue · Ctrl+O Ouvrir · Ctrl+S Enregistrer · Ctrl+Q Quitter";
+        }
+        draw_.text(statusArea.x, statusArea.y + 2,
+                   draw_.terminal() ? status : fitMono(status, statusArea.w / 7),
+                   color::muted, 12, true, false, statusArea.w);
     }
 
     void drawAuxHeader(std::size_t index, std::string_view title)
@@ -2197,20 +2290,25 @@ private:
     void draw()
     {
         const auto realHover = hover_;
-        for (std::size_t i = 0; i < desktop_.count(); ++i)
+        for (std::size_t i = 0; i < display_.count(); ++i)
         {
-            auto *window = desktop_.at(i);
-            if (!window)
+            if (!display_.open(i))
                 continue;
-            hover_ = hoverWindow_ == i ? realHover : t_bunny_position{-1, -1};
-            draw_.target(window->buffer);
-            bunny_clear(&window->buffer, color::background);
+            hover_ = hoverWindow_ == i ? realHover : Point{-1, -1};
+            display_.begin(i);
+            if (draw_.terminal() && (mainArea.w < 24 * terminalCellWidth || mainArea.h < 3 * terminalCellHeight))
+            {
+                draw_.text(0, 0, "bstep · Agrandis la fenêtre", color::gold);
+                draw_.text(0, terminalCellHeight, "Ctrl+Q pour quitter", color::text);
+                display_.present(i);
+                continue;
+            }
             if (studying_)
             {
                 if (i == 0)
                 {
                     drawTitle("PARCOURS", commandColor::course);
-                    button(modeButton, "Éditeur", {}, commandColor::course);
+                    button(modeButton, "Éditeur", draw_.terminal() ? "F3" : "", commandColor::course);
                     course_.draw(draw_, hover_, false);
                 }
                 else if (i == 1)
@@ -2220,10 +2318,10 @@ private:
                 }
                 else
                     drawAuxHeader(i, "Parcours en cours");
-                bunny_display(window);
+                display_.present(i);
                 continue;
             }
-            switch (Desktop::view(i))
+            switch (i < 4 ? static_cast<View>(i) : View::watches)
             {
             case View::editor:
                 drawHeader();
@@ -2256,40 +2354,197 @@ private:
                 drawWatches(auxiliaryBody(i));
                 break;
             }
-            bunny_display(window);
+            display_.present(i);
         }
         hover_ = realHover;
     }
 
 };
 
-t_bunny_response loop(void *data) { return static_cast<App *>(data)->tick(); }
-t_bunny_response inputEvent(const t_bunny_event *event, void *data)
+#ifndef BSTEP_GUI
+int runTerminal(const fs::path &root, const fs::path &file, const fs::path &courseRoot, bool startCourse)
 {
-    return static_cast<App *>(data)->inputEvent(*event);
-}
-t_bunny_response click(t_bunny_event_state state, t_bunny_mouse_button button, void *data)
-{
-    return static_cast<App *>(data)->click(state, button);
-}
-t_bunny_response wheel(int id, int delta, void *data)
-{
-    return static_cast<App *>(data)->wheel(id, delta);
-}
-t_bunny_response resize(const t_bunny_window *window, const t_bunny_position *size, void *data)
-{
-    return static_cast<App *>(data)->resize(window, *size);
+    Terminal terminal;
+    App app(terminal, root, file, courseRoot, startCourse);
+    app.tick();
+    while (terminal.running())
+    {
+        terminal.readInput();
+        if (terminal.updateSize())
+            app.resize();
+        while (const auto event = terminal.event())
+        {
+            using Type = TerminalEvent::Type;
+            switch (event->type)
+            {
+            case Type::key:
+                if (app.key(0, event->key, event->control, event->shift))
+                    return 0;
+                break;
+            case Type::text: app.text(0, event->character); break;
+            case Type::paste: app.paste(event->bytes); break;
+            case Type::press:
+            case Type::release:
+                if (app.click(0, event->point, event->type == Type::press, event->shift))
+                    return 0;
+                break;
+            case Type::motion: app.moved(0, event->point); break;
+            case Type::wheel: app.wheel(0, event->point, event->axis, event->delta); break;
+            case Type::focus: app.focusChanged(); break;
+            }
+        }
+        if (terminal.running())
+            app.tick();
+    }
+    return 0;
 }
 
-t_bunny_response close(const t_bunny_window *window, void *data)
+#else
+int guiStartupChannel()
 {
-    return static_cast<App *>(data)->close(window);
+    const char *raw = std::getenv("BSTEP_GUI_READY_FD");
+    if (!raw)
+        return -1;
+    const std::string_view value(raw);
+    int fd = -1;
+    const auto result = std::from_chars(value.data(), value.data() + value.size(), fd);
+    const bool valid = result.ec == std::errc{} && result.ptr == value.data() + value.size() && fd >= 3;
+    unsetenv("BSTEP_GUI_READY_FD");
+    if (!valid)
+        return -1;
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+    return fd;
 }
 
-t_bunny_response motion(const t_bunny_position *, void *data)
+struct GuiSession
 {
-    return static_cast<App *>(data)->moved(bunny_get_window());
+    App app;
+    Desktop &desktop;
+    bool leftShift = false, rightShift = false, rightAlt = false, controlText = false;
+
+    std::size_t index() const { return desktop.index(bunny_get_window()); }
+    bool shift() const { return leftShift || rightShift; }
+};
+
+Key guiKey(t_bunny_keysym sym)
+{
+    if (sym >= BKS_A && sym <= BKS_Z)
+        return static_cast<Key>(static_cast<int>(Key::a) + sym - BKS_A);
+    if (sym >= BKS_F2 && sym <= BKS_F10)
+        return static_cast<Key>(static_cast<int>(Key::f2) + sym - BKS_F2);
+    switch (sym)
+    {
+    case BKS_ESCAPE: return Key::escape;
+    case BKS_RETURN: return Key::enter;
+    case BKS_BACKSPACE: return Key::backspace;
+    case BKS_TAB: return Key::tab;
+    case BKS_PAGEUP: return Key::pageUp;
+    case BKS_PAGEDOWN: return Key::pageDown;
+    case BKS_HOME: return Key::home;
+    case BKS_END: return Key::end;
+    case BKS_DELETE: return Key::del;
+    case BKS_LEFT: return Key::left;
+    case BKS_RIGHT: return Key::right;
+    case BKS_UP: return Key::up;
+    case BKS_DOWN: return Key::down;
+    case BKS_LCONTROL: case BKS_RCONTROL:
+    case BKS_LSHIFT: case BKS_RSHIFT:
+    case BKS_LALT: case BKS_RALT:
+    case BKS_LSYSTEM: case BKS_RSYSTEM:
+        return Key::modifier;
+    default: return Key::unknown;
+    }
 }
+
+t_bunny_response guiEvent(const t_bunny_event *event, void *data)
+{
+    auto &gui = *static_cast<GuiSession *>(data);
+    switch (event->type)
+    {
+    case BET_LOST_FOCUS:
+    case BET_GAIN_FOCUS:
+        gui.leftShift = gui.rightShift = gui.rightAlt = gui.controlText = false;
+        gui.app.focusChanged();
+        break;
+    case BET_TEXT_ENTERED:
+        if (!gui.controlText)
+            gui.app.text(gui.index(), event->text.unicode);
+        break;
+    case BET_KEY_PRESSED:
+    case BET_KEY_RELEASED:
+    {
+        const auto sym = event->key.sym;
+        const bool down = event->type == BET_KEY_PRESSED;
+        if (sym == BKS_LSHIFT) gui.leftShift = down;
+        if (sym == BKS_RSHIFT) gui.rightShift = down;
+        if (sym == BKS_RALT) gui.rightAlt = down;
+        // Releases outside the window can leave LibLapin's keyboard array stale.
+        const bool releasedControl = !down && (sym == BKS_LCONTROL || sym == BKS_RCONTROL);
+        gui.controlText = event->key.control && !gui.rightAlt && !releasedControl;
+        if (down && gui.app.key(gui.index(), guiKey(sym), gui.controlText, event->key.shift))
+            return EXIT_ON_SUCCESS;
+        break;
+    }
+    default: break;
+    }
+    return GO_ON;
+}
+
+int runGui(Desktop &desktop, const fs::path &root, const fs::path &file,
+           const fs::path &courseRoot, bool startCourse, int ready)
+{
+    GuiSession gui{App(desktop, root, file, courseRoot, startCourse), desktop};
+    bunny_set_event_response(guiEvent);
+    bunny_set_click_response([](t_bunny_event_state state, t_bunny_mouse_button button, void *data)
+    {
+        auto &gui = *static_cast<GuiSession *>(data);
+        const auto p = *bunny_get_mouse_position();
+        if (button == BMB_LEFT && gui.app.click(gui.index(), {p.x, p.y}, state != GO_UP, gui.shift()))
+            return EXIT_ON_SUCCESS;
+        return GO_ON;
+    });
+    bunny_set_move_response([](const t_bunny_position *, void *data)
+    {
+        auto &gui = *static_cast<GuiSession *>(data);
+        const auto p = *bunny_get_mouse_position();
+        gui.app.moved(gui.index(), {p.x, p.y});
+        return GO_ON;
+    });
+    bunny_set_wheel_response([](int axis, int delta, void *data)
+    {
+        auto &gui = *static_cast<GuiSession *>(data);
+        const auto p = *bunny_get_mouse_position();
+        gui.app.wheel(gui.index(), {p.x, p.y}, axis, delta);
+        return GO_ON;
+    });
+    bunny_set_resize_response([](const t_bunny_window *window, const t_bunny_position *size, void *data)
+    {
+        auto &gui = *static_cast<GuiSession *>(data);
+        if (auto *target = gui.desktop.at(gui.desktop.index(window)); target && size->x > 0 && size->y > 0
+            && (target->buffer.width != size->x || target->buffer.height != size->y))
+            bunny_resize_window(target, *size);
+        gui.app.resize();
+        return GO_ON;
+    });
+    bunny_set_close_response([](const t_bunny_window *window, void *data)
+    {
+        auto &gui = *static_cast<GuiSession *>(data);
+        return gui.app.close(gui.desktop.index(window)) ? EXIT_ON_CROSS : GO_ON;
+    });
+    bunny_set_loop_main_function([](void *data)
+    {
+        static_cast<GuiSession *>(data)->app.tick();
+        return GO_ON;
+    });
+    if (ready >= 0)
+    {
+        ssize_t written;
+        do { written = write(ready, "1", 1); } while (written < 0 && errno == EINTR);
+        close(ready);
+    }
+    return bunny_loop_mw(desktop.events(), desktop.count(), 35, &gui) == EXIT_ON_ERROR ? 1 : 0;
+}
+#endif
 
 } // namespace
 
@@ -2297,7 +2552,12 @@ int main(int argc, char **argv)
 {
     try
     {
+#ifdef BSTEP_GUI
+        const int ready = guiStartupChannel();
         bool windowed = false;
+#elif !defined(BSTEP_TUI_ONLY)
+        bool useTerminal = false;
+#endif
         fs::path target;
         fs::path courseRoot;
         for (int i = 1; i < argc; ++i)
@@ -2306,11 +2566,21 @@ int main(int argc, char **argv)
             if (argument == "--help")
             {
                 std::cout << "Usage : " << argv[0]
-                          << " [--fenetre] [--parcours dossier-ou-manifeste.tsv] [dossier-source | fichier.c]\n";
+                          << " [--tui]"
+#ifndef BSTEP_TUI_ONLY
+                          << " [--fenetre]"
+#endif
+                          << " [--parcours dossier-ou-manifeste.tsv] [dossier-source | fichier.c]\n";
                 return 0;
             }
-            if (argument == "--fenetre")
-                windowed = true;
+            if (argument == "--tui" || argument == "--fenetre")
+            {
+#ifdef BSTEP_GUI
+                windowed |= argument == "--fenetre";
+#elif !defined(BSTEP_TUI_ONLY)
+                useTerminal |= argument == "--tui";
+#endif
+            }
             else if (argument == "--parcours")
             {
                 if (++i == argc)
@@ -2346,16 +2616,22 @@ int main(int argc, char **argv)
         const bool startCourse = !courseRoot.empty();
         if (!startCourse)
             courseRoot = executable.parent_path() / "parcours";
-        Desktop desktop(windowed);
-        App app(desktop, executable.parent_path() / "assets", root, file, courseRoot, startCourse);
-        bunny_set_event_response(inputEvent);
-        bunny_set_click_response(click);
-        bunny_set_move_response(motion);
-        bunny_set_wheel_response(wheel);
-        bunny_set_resize_response(resize);
-        bunny_set_close_response(close);
-        bunny_set_loop_main_function(loop);
-        return bunny_loop_mw(desktop.events(), desktop.count(), 35, &app) == EXIT_ON_ERROR ? 1 : 0;
+#ifdef BSTEP_GUI
+        Desktop desktop(windowed, executable.parent_path() / "assets");
+        return runGui(desktop, root, file, courseRoot, startCourse, ready);
+#else
+#ifndef BSTEP_TUI_ONLY
+        if (!useTerminal)
+        {
+            if (const auto exitCode = launchGui(executable.parent_path() / "bstep-gui", argv))
+                return *exitCode;
+            if (!Terminal::available())
+                throw std::runtime_error("Affichage graphique indisponible et aucun terminal interactif.");
+            std::cerr << "Affichage graphique indisponible. Ouverture du mode TUI.\n";
+        }
+#endif
+        return runTerminal(root, file, courseRoot, startCourse);
+#endif
     }
     catch (const std::exception &error)
     {

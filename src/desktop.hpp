@@ -1,18 +1,21 @@
 #pragma once
 
-#include <lapin.h>
+#include "display.hpp"
+#include "lapin_painter.hpp"
+
+#include <SFML/System/String.hpp>
+#include <SFML/Window/Clipboard.hpp>
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
-enum class View { editor, memory, terminal, tools, watches };
-
-class Desktop
+class Desktop final : public UiDisplay
 {
 public:
-    explicit Desktop(bool windowed)
+    Desktop(bool windowed, const std::filesystem::path &assets)
         : windowed_(windowed)
     {
         // Clone outputs share the same origin. Use one window for that desktop region.
@@ -56,23 +59,12 @@ public:
         reopen();
         if (!events_[0])
             throw std::runtime_error("Impossible d'ouvrir la fenêtre principale.");
-    }
-
-    static View view(std::size_t index)
-    {
-        switch (index)
-        {
-        case 0: return View::editor;
-        case 1: return View::memory;
-        case 2: return View::terminal;
-        case 3: return View::tools;
-        default: return View::watches;
-        }
+        painter_.emplace(assets);
     }
 
     static const char *title(std::size_t index)
     {
-        switch (view(index))
+        switch (index < 4 ? static_cast<View>(index) : View::watches)
         {
         case View::editor: return "bstep";
         case View::memory: return "bstep - Memoire";
@@ -87,8 +79,32 @@ public:
     {
         return index < events_.size() ? events_[index] : nullptr;
     }
-    bool open(std::size_t index) const { return at(index) != nullptr; }
-    std::size_t count() const { return events_.size(); }
+    Painter &painter() override { return *painter_; }
+    Rect area(std::size_t index) const override
+    {
+        const auto *window = at(index);
+        return window ? Rect{0, 0, static_cast<int>(window->buffer.width), static_cast<int>(window->buffer.height)}
+                      : Rect{};
+    }
+    void begin(std::size_t index) override
+    {
+        auto &buffer = at(index)->buffer;
+        painter_->target(buffer);
+        bunny_clear(&buffer, color::background);
+    }
+    void present(std::size_t index) override { bunny_display(at(index)); }
+
+    void copy(std::string_view text) override
+    {
+        sf::Clipboard::setString(sf::String::fromUtf8(text.begin(), text.end()));
+    }
+    std::string clipboard() const override
+    {
+        const auto bytes = sf::Clipboard::getString().toUtf8();
+        return {bytes.begin(), bytes.end()};
+    }
+
+    std::size_t count() const override { return events_.size(); }
     t_bunny_window **events() { return events_.data(); }
 
     std::size_t index(const t_bunny_window *window) const
@@ -96,7 +112,7 @@ public:
         return static_cast<std::size_t>(std::ranges::find(events_, window) - events_.begin());
     }
 
-    void close(std::size_t index)
+    void close(std::size_t index) override
     {
         if (index == 0 || index >= count())
             return;
@@ -105,11 +121,11 @@ public:
         windows_[index].reset();
     }
 
-    void reopen()
+    void reopen() override
     {
         for (std::size_t i = 0; i < count(); ++i)
         {
-            if (open(i))
+            if (at(i))
                 continue;
             const auto style = windowed_ ? DEFAULT_WIN_STYLE : NO_BORDER;
             windows_[i].reset(bunny_start_style(width_, height_, style, title(i)));
@@ -130,6 +146,7 @@ private:
     std::vector<t_bunny_area> monitors_;
     std::vector<std::unique_ptr<t_bunny_window, DeleteWindow>> windows_;
     std::vector<t_bunny_window *> events_;
+    std::optional<LapinPainter> painter_;
     bool windowed_;
     int width_ = 0;
     int height_ = 0;

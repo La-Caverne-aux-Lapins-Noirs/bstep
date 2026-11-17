@@ -20,8 +20,19 @@ Rect rightButton(Rect area, int width)
 }
 
 Rect browseButton(Rect nav) { return {nav.right() - 118, nav.y, 118, nav.h}; }
-Rect trackingNav(Rect area) { return inset({area.x, area.y, area.w, 38}, 12, 9, 0); }
-Rect verifyButton(Rect area) { return {area.x + 12, area.bottom() - 37, 102, 28}; }
+Rect trackingNav(Rect area, bool terminal)
+{
+    return terminal ? Rect{area.x + 12, area.y + terminalCellHeight, area.w - 24, terminalCellHeight}
+                    : inset({area.x, area.y, area.w, 38}, 12, 9, 0);
+}
+
+Rect verifyButton(Rect area, bool terminal)
+{
+    return terminal ? Rect{area.x + 12, area.bottom() - 2 * terminalCellHeight, 14 * terminalCellWidth, terminalCellHeight}
+                    : Rect{area.x + 12, area.bottom() - 37, 102, 28};
+}
+
+int minimumTrackingHeight(bool terminal) { return terminal ? 8 * terminalCellHeight : 167; }
 
 Rect listRow(Rect area, int row)
 {
@@ -35,7 +46,11 @@ int listRows(Rect area)
 
 int textRows(Rect area) { return std::max(1, (area.h - 10) / textPitch); }
 int textColumns(Rect area) { return std::max(1, (area.w - textMargin - 7) / textGlyph); }
-Rect codeLines(Rect code) { return inset(code, 1, 45, 10); }
+Rect codeLines(Rect code, bool terminal)
+{
+    return terminal ? inset(code, terminalCellWidth, 2 * terminalCellHeight, terminalCellHeight)
+                    : inset(code, 1, 45, 10);
+}
 
 void scroll(int &top, int delta, int total, int visible)
 {
@@ -114,14 +129,15 @@ void paintText(Painter &draw, Rect area, const Editor &ed, bool focused, std::st
             draw.text(textX, y, encodeUtf8(visible), color::text, 14, true);
         }
         if (focused && row == caretRow && caretCol >= ed.left && caretCol - ed.left < columns)
-            draw.rect({textX + (caretCol - ed.left) * textGlyph, y + 3, 1, 15}, accent);
+            draw.caret({textX + (caretCol - ed.left) * textGlyph, y + 3, 1, 15}, accent);
     }
     paintScroll(draw, inset(area, 0, 2, 2), ed.top, ed.lines(), textRows(area));
 }
 
 } // namespace
 
-CourseView::CourseView(std::filesystem::path root) : root_(std::move(root)) {}
+CourseView::CourseView(std::filesystem::path root, bool terminal)
+    : root_(std::move(root)), terminal_(terminal) {}
 
 void CourseView::enter(bool openSingle)
 {
@@ -142,7 +158,7 @@ void CourseView::layout(Rect main, Rect tracking)
 {
     main_ = main;
     secondary_ = tracking;
-    const auto body = inset(main_, 0, 44, 0);
+    const auto body = inset(main_, 0, terminal_ ? 2 * terminalCellHeight : 44, 0);
     panes_ = {{main_.x, main_.y, main_.w, 34}, {}, {}};
     if (split())
     {
@@ -159,15 +175,17 @@ void CourseView::layout(Rect main, Rect tracking)
     }
     else
     {
-        const int height = std::min(260, body.h * 5 / 9);
+        const int height = terminal_
+            ? std::min(body.h, std::clamp(body.h / terminalCellHeight * 5 / 9, 10, 14) * terminalCellHeight)
+            : std::min(260, body.h * 5 / 9);
         panes_.tracking = {body.x, body.bottom() - height, body.w, height};
-        panes_.code = inset(body, 0, 0, height + 10);
+        panes_.code = inset(body, 0, 0, height + (terminal_ ? 0 : 10));
     }
     scroll(catalogTop_, 0, static_cast<int>(catalog_.size()), listRows(main_));
     if (course_)
         scroll(progressTop_, 0, static_cast<int>(course_->exercises.size()), listRows(panes_.tracking));
-    scroll(code_.top, 0, code_.lines(), codeLines(panes_.code).h / codePitch);
-    scroll(input_.top, 0, input_.lines(), textRows(codeLines(panes_.code)));
+    scroll(code_.top, 0, code_.lines(), codeLines(panes_.code, terminal_).h / codeLinePitch(terminal_));
+    scroll(input_.top, 0, input_.lines(), textRows(codeLines(panes_.code, terminal_)));
     followQuestion();
     if (course_ && !showProgress_)
     {
@@ -186,10 +204,11 @@ std::string CourseView::progress() const
 
 std::array<Rect, 2> CourseView::answerAreas() const
 {
-    auto area = inset(panes_.tracking, 12, 118, 46);
+    auto area = terminal_ ? inset(panes_.tracking, 12, 5 * terminalCellHeight, 2 * terminalCellHeight)
+                          : inset(panes_.tracking, 12, 118, 46);
     if (exercise().goal != training::Goal::streams || question())
         return {area, Rect{}};
-    area = inset(area, 0, 20, 0);
+    area = inset(area, 0, terminal_ ? terminalCellHeight : 20, 0);
     const int errorWidth = std::max(0, (area.w - 8) / 3);
     const Rect error{area.right() - errorWidth, area.y, errorWidth, area.h};
     area.w = std::max(0, area.w - errorWidth - 8);
@@ -217,6 +236,7 @@ void CourseView::refresh()
     try { catalog_ = training::discover(root_); }
     catch (const std::exception &error) { catalogNote_ = error.what(); }
     catalogTop_ = 0;
+    listSelection_ = 0;
 }
 
 void CourseView::open(const training::CatalogEntry &entry)
@@ -394,7 +414,7 @@ void CourseView::followQuestion()
     if (!point || panes_.code.h <= 0)
         return;
     const int row = point->source.line - 1;
-    const int rows = std::max(1, codeLines(panes_.code).h / codePitch);
+    const int rows = std::max(1, codeLines(panes_.code, terminal_).h / codeLinePitch(terminal_));
     if (row < code_.top || row >= code_.top + rows)
         code_.top = std::clamp(row - rows / 2, 0, std::max(0, code_.lines() - rows));
 }
@@ -410,7 +430,7 @@ void CourseView::followAnswer(std::size_t index, Rect area)
     answer.left = std::clamp(answer.left, std::max(0, column - columns + 1), column);
 }
 
-void CourseView::draw(Painter &draw, t_bunny_position hover, bool secondary) const
+void CourseView::draw(Painter &draw, Point hover, bool secondary) const
 {
     if (secondary)
     {
@@ -437,7 +457,7 @@ void CourseView::draw(Painter &draw, t_bunny_position hover, bool secondary) con
         drawTracking(draw, hover);
 }
 
-void CourseView::drawCatalog(Painter &draw, t_bunny_position hover) const
+void CourseView::drawCatalog(Painter &draw, Point hover) const
 {
     draw.frame(main_, color::background, color::rule);
     draw.text(main_.x + 12, main_.y + 11, "Parcours disponibles", color::text, 20,
@@ -446,7 +466,8 @@ void CourseView::drawCatalog(Painter &draw, t_bunny_position hover) const
     const int rows = listRows(main_);
     const int end = std::min(static_cast<int>(catalog_.size()), catalogTop_ + rows);
     for (int index = catalogTop_; index < end; ++index)
-        paintButton(draw, listRow(main_, index - catalogTop_), hover, catalog_[index].title, {}, accent);
+        paintButton(draw, listRow(main_, index - catalogTop_), hover, catalog_[index].title, {},
+                    accent, terminal_ && index == listSelection_);
     paintScroll(draw, {main_.x, main_.y + 50, main_.w, rows * rowHeight},
                 catalogTop_, static_cast<int>(catalog_.size()), rows);
     if (catalog_.empty() && catalogNote_.empty())
@@ -462,7 +483,7 @@ void CourseView::drawCatalog(Painter &draw, t_bunny_position hover) const
                   13, false, false, main_.w - 24);
 }
 
-void CourseView::drawCode(Painter &draw, t_bunny_position hover) const
+void CourseView::drawCode(Painter &draw, Point hover) const
 {
     const auto area = panes_.code;
     if (area.h < 46)
@@ -475,7 +496,7 @@ void CourseView::drawCode(Painter &draw, t_bunny_position hover) const
     if (hasInput)
         paintButton(draw, rightButton(area, 118), hover, showInput_ ? "Code source" : "Entrée fournie",
                     {}, vt::palette[11], showInput_);
-    const auto lines = codeLines(area);
+    const auto lines = codeLines(area, terminal_);
     if (showInput_)
         paintText(draw, lines, input_, false);
     else
@@ -485,7 +506,7 @@ void CourseView::drawCode(Painter &draw, t_bunny_position hover) const
     }
 }
 
-void CourseView::drawTracking(Painter &draw, t_bunny_position hover) const
+void CourseView::drawTracking(Painter &draw, Point hover) const
 {
     const auto area = panes_.tracking;
     if (area.h < 85)
@@ -506,25 +527,26 @@ void CourseView::drawTracking(Painter &draw, t_bunny_position hover) const
             const auto row = listRow(area, index - progressTop_);
             const unsigned tint = item.passed ? vt::palette[10] : accent;
             paintButton(draw, row, hover, label, item.passed ? "Validé" : "À faire", tint,
-                        static_cast<std::size_t>(index) == current_);
+                        terminal_ ? index == listSelection_ : static_cast<std::size_t>(index) == current_);
         }
         paintScroll(draw, {area.x, area.y + 50, area.w, rows * rowHeight},
                     progressTop_, static_cast<int>(exercises.size()), rows);
         return;
     }
 
-    const auto nav = trackingNav(area);
+    const auto nav = trackingNav(area, terminal_);
     paintButton(draw, horizontalPart(nav, 0, 3), hover, "Exercices", {}, accent);
     paintButton(draw, horizontalPart(nav, 1, 3), hover, "Précédent", {}, accent, false, current_ > 0);
     paintButton(draw, horizontalPart(nav, 2, 3), hover, "Suivant", {}, accent, false, current_ + 1 < exercises.size());
     const auto &item = exercise();
     const std::string title = std::to_string(current_ + 1) + "/" + std::to_string(exercises.size()) + " · " + item.title;
     const auto passed = "Validé";
-    draw.text(area.x + 12, area.y + 45, title, color::text, 17,
+    const int titleY = area.y + (terminal_ ? 2 * terminalCellHeight : 45);
+    draw.text(area.x + 12, titleY, title, color::text, 17,
               false, false, area.w - (item.passed ? 82 : 24));
     if (item.passed)
-        draw.text(area.right() - 62, area.y + 48, passed, vt::palette[10], 14);
-    if (area.h < 167)
+        draw.text(area.right() - 62, titleY + 3, passed, vt::palette[10], 14);
+    if (area.h < minimumTrackingHeight(terminal_))
         return;
     const auto *point = question();
     std::string prompt;
@@ -560,8 +582,10 @@ void CourseView::drawTracking(Painter &draw, t_bunny_position hover) const
         detail = item.expression;
         break;
     }
-    draw.text(area.x + 12, area.y + 75, prompt, point ? accent : color::text, 15, false, false, area.w - 24);
-    draw.text(area.x + 12, area.y + 96, detail, color::muted, 13, false, false, area.w - 24);
+    draw.text(area.x + 12, area.y + (terminal_ ? 3 * terminalCellHeight : 75),
+              prompt, point ? accent : color::text, 15, false, false, area.w - 24);
+    draw.text(area.x + 12, area.y + (terminal_ ? 4 * terminalCellHeight : 96),
+              detail, color::muted, 13, false, false, area.w - 24);
     const auto areas = answerAreas();
     const bool streams = item.goal == training::Goal::streams && !point;
     const auto placeholder = point ? "Une ligne par passage" : "Ta réponse";
@@ -572,17 +596,19 @@ void CourseView::drawTracking(Painter &draw, t_bunny_position hover) const
         if (field.w <= 0)
             continue;
         if (streams)
-            draw.text(field.x, field.y - 20, labels[i], i ? vt::palette[11] : color::muted, 13, true);
+            draw.text(field.x, field.y - (terminal_ ? terminalCellHeight : 20), labels[i], i ? vt::palette[11] : color::muted, 13, true);
         paintText(draw, field, answers_[i], focusedAnswer_ == i && !busy(), placeholder);
     }
-    const auto verify = verifyButton(area);
-    paintButton(draw, verify, hover, "Vérifier", {}, accent, true, !busy());
-    const auto note = busy() ? "Simulation en cours…" : feedback_.empty() ? "Ctrl+Entrée pour vérifier" : feedback_;
+    const auto verify = verifyButton(area, terminal_);
+    paintButton(draw, verify, hover, "Vérifier", terminal_ ? "F4" : "", accent, true, !busy());
+    const auto hint = terminal_ ? (streams ? "Maj+Tab change de flux" : "F4 pour vérifier")
+                                : "Ctrl+Entrée pour vérifier";
+    const auto note = busy() ? "Simulation en cours…" : feedback_.empty() ? hint : feedback_;
     draw.text(verify.right() + 12, verify.y + 5, note, busy() || feedback_.empty() ? color::muted : feedbackColor_,
-              14, false, false, area.w - 138);
+              14, false, false, area.right() - verify.right() - 24);
 }
 
-void CourseView::click(t_bunny_position p, bool secondary, bool shift)
+void CourseView::click(Point p, bool secondary, bool shift)
 {
     if (!course_)
     {
@@ -622,7 +648,7 @@ void CourseView::click(t_bunny_position p, bool secondary, bool shift)
         focusedAnswer_.reset();
 }
 
-void CourseView::clickTracking(t_bunny_position p, bool shift)
+void CourseView::clickTracking(Point p, bool shift)
 {
     const auto area = panes_.tracking;
     if (showProgress_)
@@ -646,20 +672,20 @@ void CourseView::clickTracking(t_bunny_position p, bool shift)
         return;
     }
 
-    const auto nav = trackingNav(area);
-    const auto verify = verifyButton(area);
+    const auto nav = trackingNav(area, terminal_);
+    const auto verify = verifyButton(area, terminal_);
     focusedAnswer_.reset();
     if (horizontalPart(nav, 0, 3).contains(p))
     {
         showProgress_ = true;
-        progressTop_ = static_cast<int>(current_);
+        progressTop_ = listSelection_ = static_cast<int>(current_);
         layout(main_, secondary_);
     }
     else if (horizontalPart(nav, 1, 3).contains(p) && current_ > 0)
         select(current_ - 1);
     else if (horizontalPart(nav, 2, 3).contains(p) && current_ + 1 < course_->exercises.size())
         select(current_ + 1);
-    else if (area.h >= 167 && verify.contains(p))
+    else if (area.h >= minimumTrackingHeight(terminal_) && verify.contains(p))
         submit();
     else if (!busy())
     {
@@ -671,7 +697,8 @@ void CourseView::clickTracking(t_bunny_position p, bool shift)
                 continue;
             auto &answer = answers_[i];
             const int row = (p.y - field.y - 4) / textPitch + answer.top;
-            const int column = std::max(0, (p.x - field.x - textMargin + textGlyph / 2) / textGlyph) + answer.left;
+            const int bias = terminal_ ? 0 : textGlyph / 2;
+            const int column = std::max(0, (p.x - field.x - textMargin + bias) / textGlyph) + answer.left;
             answer.place(answer.at(row, column), shift);
             focusedAnswer_ = i;
             followAnswer(i, field);
@@ -680,7 +707,7 @@ void CourseView::clickTracking(t_bunny_position p, bool shift)
     }
 }
 
-void CourseView::wheel(t_bunny_position p, bool secondary, int axis, int delta)
+void CourseView::wheel(Point p, bool secondary, int axis, int delta)
 {
     if (!course_)
     {
@@ -699,19 +726,58 @@ void CourseView::wheel(t_bunny_position p, bool secondary, int axis, int delta)
                     scrollEditor(answers_[i], axis, -delta, textRows(areas[i]));
         }
     }
-    else if (!secondary && codeLines(panes_.code).contains(p))
+    else if (!secondary && codeLines(panes_.code, terminal_).contains(p))
     {
-        const auto lines = codeLines(panes_.code);
+        const auto lines = codeLines(panes_.code, terminal_);
         if (showInput_)
             scrollEditor(input_, axis, -delta, textRows(lines));
         else
-            scrollEditor(code_, axis, -delta, lines.h / codePitch);
+            scrollEditor(code_, axis, -delta, lines.h / codeLinePitch(terminal_));
     }
 }
 
-void CourseView::key(t_bunny_keysym key, bool secondary, bool control, bool shift, KillBuffer &kills)
+bool CourseView::navigateList(Key key)
 {
-    if (key == BKS_ESCAPE)
+    if (key != Key::up && key != Key::down && key != Key::enter)
+        return false;
+    const int count = static_cast<int>(course_ ? course_->exercises.size() : catalog_.size());
+    if (count == 0)
+        return true;
+    auto &top = course_ ? progressTop_ : catalogTop_;
+    const int rows = std::max(1, listRows(course_ ? panes_.tracking : main_));
+    if (key == Key::enter)
+    {
+        if (!course_)
+            open(catalog_[listSelection_]);
+        else if (static_cast<std::size_t>(listSelection_) != current_)
+            select(static_cast<std::size_t>(listSelection_));
+        else
+        {
+            showProgress_ = false;
+            layout(main_, secondary_);
+        }
+    }
+    else
+    {
+        listSelection_ = std::clamp(listSelection_ + (key == Key::up ? -1 : 1), 0, count - 1);
+        top = std::clamp(top, std::max(0, listSelection_ - rows + 1), listSelection_);
+    }
+    return true;
+}
+
+void CourseView::key(Key key, bool secondary, bool control, bool shift, KillBuffer &kills, UiDisplay &display)
+{
+    if (terminal_ && key == Key::f2 && course_)
+    {
+        showProgress_ = !showProgress_;
+        if (showProgress_)
+            progressTop_ = listSelection_ = static_cast<int>(current_);
+        layout(main_, secondary_);
+        return;
+    }
+    if (terminal_ && !control && (!course_ || showProgress_) && navigateList(key))
+        return;
+    if (key == Key::escape)
     {
         if (showProgress_ && course_)
         {
@@ -720,15 +786,21 @@ void CourseView::key(t_bunny_keysym key, bool secondary, bool control, bool shif
         }
         focusedAnswer_.reset();
     }
-    else if (takingAnswer(secondary) && control && key == BKS_RETURN)
+    else if (takingAnswer(secondary) && ((control && key == Key::enter) || (terminal_ && key == Key::f4)))
         submit();
+    else if (terminal_ && takingAnswer(secondary) && !busy() && key == Key::tab && shift)
+    {
+        const auto areas = answerAreas();
+        focusedAnswer_ = areas[1].w > 0 && focusedAnswer_ == 0 ? 1 : 0;
+        followAnswer(*focusedAnswer_, areas[*focusedAnswer_]);
+    }
     else if (takingAnswer(secondary) && focusedAnswer_ && !busy())
     {
         const auto index = *focusedAnswer_;
         const auto field = answerAreas()[index];
         auto &answer = answers_[index];
         const auto revision = answer.revision();
-        if (editKey(answer, key, control, shift, textRows(field), false, kills))
+        if (editKey(answer, key, control, shift, textRows(field), false, kills, display))
         {
             if (answer.revision() != revision)
                 feedback_.clear();
@@ -738,18 +810,18 @@ void CourseView::key(t_bunny_keysym key, bool secondary, bool control, bool shif
     else if (!secondary && course_ && panes_.code.w > 0 && !control)
     {
         auto &ed = showInput_ ? input_ : code_;
-        const auto lines = codeLines(panes_.code);
-        const int rows = showInput_ ? textRows(lines) : std::max(1, lines.h / codePitch);
-        if (key == BKS_UP || key == BKS_DOWN)
-            scroll(ed.top, key == BKS_UP ? -1 : 1, ed.lines(), rows);
-        else if (key == BKS_PAGEUP || key == BKS_PAGEDOWN)
-            scroll(ed.top, key == BKS_PAGEUP ? -rows : rows, ed.lines(), rows);
-        else if (key == BKS_LEFT || key == BKS_RIGHT)
-            scroll(ed.left, key == BKS_LEFT ? -4 : 4, 32768, 1);
+        const auto lines = codeLines(panes_.code, terminal_);
+        const int rows = showInput_ ? textRows(lines) : std::max(1, lines.h / codeLinePitch(terminal_));
+        if (key == Key::up || key == Key::down)
+            scroll(ed.top, key == Key::up ? -1 : 1, ed.lines(), rows);
+        else if (key == Key::pageUp || key == Key::pageDown)
+            scroll(ed.top, key == Key::pageUp ? -rows : rows, ed.lines(), rows);
+        else if (key == Key::left || key == Key::right)
+            scroll(ed.left, key == Key::left ? -4 : 4, 32768, 1);
     }
 }
 
-void CourseView::text(char32_t character, bool secondary)
+void CourseView::insert(std::u32string_view text, bool secondary)
 {
     if (!takingAnswer(secondary) || busy())
         return;
@@ -758,7 +830,7 @@ void CourseView::text(char32_t character, bool secondary)
     if (!focusedAnswer_)
         return;
     const auto index = *focusedAnswer_;
-    if (answers_[index].insert(std::u32string_view(&character, 1)))
+    if (answers_[index].insert(text))
     {
         feedback_.clear();
         followAnswer(index, answerAreas()[index]);

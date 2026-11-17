@@ -1,10 +1,7 @@
 #pragma once
 
+#include "display.hpp"
 #include "editor.hpp"
-
-#include <lapin.h>
-#include <SFML/System/String.hpp>
-#include <SFML/Window/Clipboard.hpp>
 
 class KillBuffer
 {
@@ -38,49 +35,33 @@ private:
     bool consecutive_ = false;
 };
 
-inline bool modifierKey(t_bunny_keysym key)
-{
-    switch (key)
-    {
-    case BKS_LCONTROL: case BKS_RCONTROL:
-    case BKS_LSHIFT: case BKS_RSHIFT:
-    case BKS_LALT: case BKS_RALT:
-    case BKS_LSYSTEM: case BKS_RSYSTEM:
-        return true;
-    default:
-        return false;
-    }
-}
-
-inline bool editKey(Editor &ed, t_bunny_keysym key, bool control, bool shift, int page, bool code, KillBuffer &kills)
+inline bool editKey(Editor &ed, Key key, bool control, bool shift, int page, bool code, KillBuffer &kills, UiDisplay &display)
 {
     if (control)
     {
-        if (key == BKS_A)
+        if (key == Key::a)
             ed.selectAll();
-        else if (key == BKS_C || key == BKS_X)
+        else if (key == Key::c || key == Key::x)
         {
             if (!ed.selected().empty())
             {
-                const auto bytes = encodeUtf8(ed.selected());
-                sf::Clipboard::setString(sf::String::fromUtf8(bytes.begin(), bytes.end()));
-                if (key == BKS_X)
+                display.copy(encodeUtf8(ed.selected()));
+                if (key == Key::x)
                     ed.erase(true);
             }
         }
-        else if (key == BKS_V)
+        else if (key == Key::v)
         {
-            const auto bytes = sf::Clipboard::getString().toUtf8();
-            ed.insert(decodeUtf8(std::string(bytes.begin(), bytes.end()), true, code));
+            ed.insert(decodeUtf8(display.clipboard(), true, code));
         }
-        else if (key == BKS_Z)
+        else if (key == Key::z)
             shift ? ed.redo() : ed.undo();
-        else if (key == BKS_K)
+        else if (key == Key::k)
             kills.kill(ed);
-        else if (key == BKS_Y)
+        else if (key == Key::y)
             kills.yank(ed, code);
-        else if (key == BKS_HOME || key == BKS_END)
-            ed.endpoint(key == BKS_END, true, shift);
+        else if (key == Key::home || key == Key::end)
+            ed.endpoint(key == Key::end, true, shift);
         else
             return false;
     }
@@ -88,23 +69,23 @@ inline bool editKey(Editor &ed, t_bunny_keysym key, bool control, bool shift, in
     {
         switch (key)
         {
-        case BKS_LEFT: ed.horizontal(-1, shift); break;
-        case BKS_RIGHT: ed.horizontal(1, shift); break;
-        case BKS_UP: ed.vertical(-1, shift); break;
-        case BKS_DOWN: ed.vertical(1, shift); break;
-        case BKS_PAGEUP: ed.vertical(-page, shift); break;
-        case BKS_PAGEDOWN: ed.vertical(page, shift); break;
-        case BKS_HOME: ed.endpoint(false, false, shift); break;
-        case BKS_END: ed.endpoint(true, false, shift); break;
-        case BKS_BACKSPACE: ed.erase(false); break;
-        case BKS_DELETE: ed.erase(true); break;
-        case BKS_RETURN:
+        case Key::left: ed.horizontal(-1, shift); break;
+        case Key::right: ed.horizontal(1, shift); break;
+        case Key::up: ed.vertical(-1, shift); break;
+        case Key::down: ed.vertical(1, shift); break;
+        case Key::pageUp: ed.vertical(-page, shift); break;
+        case Key::pageDown: ed.vertical(page, shift); break;
+        case Key::home: ed.endpoint(false, false, shift); break;
+        case Key::end: ed.endpoint(true, false, shift); break;
+        case Key::backspace: ed.erase(false); break;
+        case Key::del: ed.erase(true); break;
+        case Key::enter:
             if (code)
                 ed.newline();
             else
                 ed.insert(U"\n");
             break;
-        case BKS_TAB:
+        case Key::tab:
             if (code)
                 ed.indent();
             else

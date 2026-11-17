@@ -1,9 +1,12 @@
 #pragma once
 
 #include "draw.hpp"
+#include "utf8.hpp"
 
+#include <array>
 #include <charconv>
 #include <optional>
+#include <vector>
 
 namespace vt
 {
@@ -128,7 +131,7 @@ inline std::vector<std::vector<Cell>> lines(std::string_view stream, std::size_t
 inline void paint(Painter &draw, Rect area, std::string_view stream, int scroll = 0, int size = 14)
 {
     constexpr int lineHeight = 19;
-    const int glyph = static_cast<int>(std::lround(atlas::monoAdvance * size / (4.0 * atlas::size)));
+    const int glyph = draw.textWidth("M", size, true);
     const int rows = area.h / lineHeight;
     if (rows <= 0 || area.w < glyph)
         return;
@@ -172,25 +175,25 @@ public:
     }
     void clear() { set(""); }
 
-    bool key(t_bunny_keysym key, bool control)
+    bool key(Key key, bool control)
     {
-        if (control && key == BKS_A)
+        if (control && key == Key::a)
             return selectAll_ = true;
         if (control)
             return false;
         switch (key)
         {
-        case BKS_HOME: cursor_ = 0; break;
-        case BKS_END: cursor_ = text_.size(); break;
-        case BKS_LEFT: if (cursor_) --cursor_; break;
-        case BKS_RIGHT: if (cursor_ < text_.size()) ++cursor_; break;
-        case BKS_BACKSPACE:
-        case BKS_DELETE:
+        case Key::home: cursor_ = 0; break;
+        case Key::end: cursor_ = text_.size(); break;
+        case Key::left: if (cursor_) --cursor_; break;
+        case Key::right: if (cursor_ < text_.size()) ++cursor_; break;
+        case Key::backspace:
+        case Key::del:
             if (selectAll_)
                 clear();
-            else if (key == BKS_BACKSPACE && cursor_)
+            else if (key == Key::backspace && cursor_)
                 text_.erase(--cursor_, 1);
-            else if (key == BKS_DELETE && cursor_ < text_.size())
+            else if (key == Key::del && cursor_ < text_.size())
                 text_.erase(cursor_, 1);
             break;
         default: return false;
@@ -210,7 +213,7 @@ public:
 
     void paint(Painter &draw, Rect area, std::string_view placeholder, bool focused) const
     {
-        if (area.w < 22 || area.h < 20)
+        if (area.w < 22 || area.h < (draw.terminal() ? terminalCellHeight : 20))
             return;
         draw.frame(area, color::background, focused ? color::white : color::type);
         constexpr int font = 14, glyph = 8;
@@ -226,7 +229,7 @@ public:
                           color::selection);
             draw.text(area.x + 8, area.y + 4, encodeUtf8(visible), color::text, font, true);
             if (focused)
-                draw.rect({area.x + 8 + static_cast<int>(cursor_ - start) * glyph, area.y + 4, 1, area.h - 8},
+                draw.caret({area.x + 8 + static_cast<int>(cursor_ - start) * glyph, area.y + 4, 1, area.h - 8},
                           color::white);
         }
     }
